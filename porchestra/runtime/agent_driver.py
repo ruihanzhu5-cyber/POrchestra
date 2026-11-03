@@ -36,7 +36,7 @@ RUNTIME_INSTRUCTION = """
 NodeRuntime owns delegation, budgets and verification. finish is a verification
 request; a rejected finish must be repaired in this SAME session. Do not submit
 to the benchmark grader. To delegate, emit a JSON action with action="spawn" and
-params.children containing two or more objects with objective, acceptance_checks
+params.children containing objects with objective, acceptance_checks, disjoint scope
 (real command strings) and budget_limit (tokens). In SWE DISCUSSION/COMMAND format,
 use COMMAND followed by: spawn {"children": [...]} on one line. Preserve inherited
 constraints. revise requests do not grant new tokens; use spawn to delegate work.
@@ -111,6 +111,9 @@ class POrchestraAgentDriver:
             child_contracts=children,
             tokens_used=used,
             progress=self._progress,
+            recommendation="request_help"
+            if kind == "spawn"
+            else ("converge" if kind == "finish" else "continue"),
         )
 
     async def step(self, node: NodeRecord) -> StepOutcome:

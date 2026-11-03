@@ -516,6 +516,7 @@ class NodeRuntime:
                 raise ValueError("Recursive depth or lifetime node cap reached")
             for contract in contracts:
                 self.verifier.validate_contract(contract, parent=parent.contract)
+            self.contracts.validate_delegation(parent.contract, contracts)
             if sum(c.budget_limit for c in contracts) >= self.budget.remaining(
                 parent_id
             ):
@@ -573,18 +574,24 @@ class NodeRuntime:
 
     async def forced_split(
         self, node_id: str, trigger: HealthDecision
-    ) -> tuple[str, str]:
+    ) -> tuple[str, ...]:
         node = self.registry.get(node_id)
         remaining = self.budget.remaining(node_id)
         retained = max(1, remaining // 5)
         children = await self.contracts.split(
             node, trigger, available_budget=remaining - retained
         )
-        if len(children) != 2:
-            raise ValueError("Forced split must produce exactly two contracts")
+        if not children:
+            await self._drivers[node_id].inject_context(
+                node_id,
+                f"Health: {trigger.reason}. Continue investigating or converge. "
+                "Request helpers only with distinct objectives, DoD and disjoint scope; no automatic task copies.",
+            )
+            self.health.acknowledge_split(node)
+            return ()
         ids = await self.spawn(node_id, children, reason=trigger.reason)
         self.health.acknowledge_split(node)
-        return ids[0], ids[1]
+        return ids
 
     async def request_finish(self, node_id: str) -> VerificationReport:
         node = self.registry.get(node_id)

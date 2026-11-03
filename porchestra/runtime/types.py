@@ -35,6 +35,8 @@ class TaskContract:
     constraints: tuple[str, ...] = ()
     allowed_tools: tuple[str, ...] = ()
     deadline_seconds: float = 600.0  # Relative lifetime; never extends parent deadline.
+    scope: tuple[str, ...] = ()  # Explicit repository paths owned by a helper.
+    independent: bool = False  # Parent declares this duty independently verifiable.
 
 
 @dataclass(frozen=True)
@@ -124,6 +126,7 @@ class StepOutcome:
     child_contracts: tuple[TaskContract, ...] = ()
     tokens_used: int = 0  # Driver supplies actual input + output usage for this step.
     progress: dict[str, Any] = field(default_factory=dict)
+    recommendation: Literal["continue", "request_help", "converge"] = "continue"
 
 
 @dataclass(frozen=True)

@@ -176,6 +176,8 @@ class ContractGenerator:
             constraints=tuple(dict.fromkeys((*inherited, *constraints))),
             allowed_tools=tools,
             deadline_seconds=data.get("deadline_seconds", default_deadline),
+            scope=self._strings(data.get("scope", []), "scope"),
+            independent=data.get("independent", False),
         )
         _validate(contract, parent)
         return contract
@@ -234,51 +236,68 @@ class ContractGenerator:
             for i, cmd in enumerate(unique, 1)
         )
 
+    def validate_delegation(
+        self, parent: TaskContract, children: tuple[TaskContract, ...]
+    ) -> None:
+        """Require explicit non-overlapping ownership and distinct verifiable duties."""
+        if not children:
+            raise ValueError("No complementary child responsibilities supplied")
+        objectives, checks, scopes = set(), set(), []
+        for child in children:
+            _validate(child, parent)
+            objective = " ".join(child.objective.lower().split())
+            signature = tuple(
+                sorted(
+                    (
+                        c.command.strip(),
+                        c.expected_exit_code,
+                        c.expected_output_pattern or "",
+                    )
+                    for c in child.acceptance_checks
+                )
+            )
+            if objective in objectives or signature in checks or not child.scope:
+                raise ValueError(
+                    "Child duties need distinct objectives, DoD and explicit scope"
+                )
+            objectives.add(objective)
+            checks.add(signature)
+            for scope in child.scope:
+                from pathlib import PurePosixPath
+
+                path = PurePosixPath(scope)
+                if (
+                    path.is_absolute()
+                    or ".." in path.parts
+                    or scope in ("", ".")
+                    or "\\" in scope
+                ):
+                    raise ValueError("Child scope must be a relative repository path")
+                normalized = path.as_posix().rstrip("/")
+                if any(
+                    normalized == other
+                    or normalized.startswith(other + "/")
+                    or other.startswith(normalized + "/")
+                    for other in scopes
+                ):
+                    raise ValueError("Child responsibilities overlap")
+                scopes.append(normalized)
+
     async def split(
         self,
         node: NodeRecord,
         trigger: HealthDecision,
         *,
         available_budget: int,
-    ) -> tuple[TaskContract, TaskContract]:
-        """Conservative rule fallback: partition DoD without inventing weaker checks.
-
-        With a single check both duties must pass it independently. Domain-specific
-        generators can override this method to provide disjoint, checkable duties.
-        available_budget excludes the parent's retained repair quota.
-        """
-        if type(available_budget) is not int or available_budget < 2:
-            raise ValueError(
-                "Splitting requires at least two remaining token allocations"
-            )
-        _validate(node.contract)
-        checks = node.contract.acceptance_checks
-        groups = (checks[::2], checks[1::2] or checks[::2])
-        limits = (available_budget // 2, available_budget - available_budget // 2)
-        children = tuple(
-            TaskContract(
-                objective=f"{role}: {node.contract.objective}\nTrigger: {trigger.reason}",
-                acceptance_checks=group,
-                budget_limit=limit,
-                contract_id=uuid4().hex,
-                parent_contract_id=node.contract.contract_id,
-                constraints=node.contract.constraints,
-                allowed_tools=node.contract.allowed_tools,
-                deadline_seconds=node.contract.deadline_seconds,
-            )
-            for role, group, limit in zip(
-                (
-                    "Investigate and resolve a verifiable part",
-                    "Implement and validate a repair",
-                ),
-                groups,
-                limits,
-                strict=True,
-            )
-        )
-        for child in children:
-            _validate(child, node.contract)
-        return children[0], children[1]
+        proposed: tuple[TaskContract, ...] = (),
+    ) -> tuple[TaskContract, ...]:
+        """Validate an explicit agent plan; never invent duplicate repair tasks."""
+        if not proposed:
+            return ()
+        self.validate_delegation(node.contract, proposed)
+        if sum(c.budget_limit for c in proposed) > available_budget:
+            raise ValueError("Proposed helper plan exceeds available budget")
+        return proposed
 
 
 class ContractVerifier:
