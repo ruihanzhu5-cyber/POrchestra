@@ -117,6 +117,7 @@ class NodeRecord:
     checkpoint_ref: str | None = None
     progress_seen: set[str] = field(default_factory=set)
     progress_log: list[dict[str, Any]] = field(default_factory=list)
+    rejected_spawn_reasons: set[str] = field(default_factory=set)
 
 
 @dataclass(frozen=True)

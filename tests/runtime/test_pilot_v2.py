@@ -144,3 +144,47 @@ class SpawnBudgetTests(unittest.IsolatedAsyncioTestCase):
             ),
             (a, b),
         )
+
+
+class RecoverableSpawnTests(unittest.IsolatedAsyncioTestCase):
+    async def test_depth_and_node_caps_keep_requester_alive(self):
+        from test_runtime import RuntimeTests, MockAgentDriver
+        from porchestra.runtime.runtime import RuntimeLimits
+        from porchestra.runtime.types import StepOutcome
+
+        for limits in (RuntimeLimits(max_depth=0), RuntimeLimits(max_nodes=1)):
+            fixture = RuntimeTests()
+            await fixture.asyncSetUp()
+            self.addCleanup(fixture.doCleanups)
+
+            class Requester(MockAgentDriver):
+                async def step(self, record):
+                    self.steps += 1
+                    if self.steps == 1:
+                        helper = replace(
+                            record.contract,
+                            objective="repair helper",
+                            contract_id="helper",
+                            parent_contract_id=record.contract.contract_id,
+                            scope=("fix.py",),
+                            budget_limit=100,
+                        )
+                        return StepOutcome("spawn", child_contracts=(helper,))
+                    self.backend.files[record.workspace_id]["fix.py"] = "fixed"
+                    return StepOutcome("finish", tokens_used=1)
+
+            runtime = fixture.build(
+                factory=lambda record: Requester(fixture.backend), limits=limits
+            )
+            result = await runtime.run(fixture.root, workspace_id="root")
+            self.assertEqual(result.outcome, "verified")
+            self.assertEqual(fixture.drivers[fixture.root.contract_id].steps, 2)
+            events = fixture.records()
+            self.assertEqual(sum(e["event"] == "SPLIT_REJECTED" for e in events), 1)
+            self.assertEqual(sum(e["event"] == "DESTROY" for e in events), 1)
+            self.assertTrue(
+                any(
+                    "recoverable" in m
+                    for m in fixture.drivers[fixture.root.contract_id].messages
+                )
+            )

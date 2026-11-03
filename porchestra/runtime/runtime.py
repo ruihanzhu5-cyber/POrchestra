@@ -497,6 +497,25 @@ class NodeRuntime:
                                 f"Lifecycle cleanup failed for {identity}"
                             ) from exc
                         if kind in {"split", "spawn"}:
+                            if (
+                                isinstance(exc, ValueError)
+                                and record.state is NodeState.ACTIVE
+                                and not record.pending_children
+                            ):
+                                reason = str(exc)
+                                if reason not in record.rejected_spawn_reasons:
+                                    await self.events.record(
+                                        "SPLIT_REJECTED", record, reason
+                                    )
+                                    record.rejected_spawn_reasons.add(reason)
+                                await self._drivers[identity].inject_context(
+                                    identity,
+                                    f"Helper request rejected (recoverable): {reason}. "
+                                    "Do not repeat the rejected plan. Continue locally or converge with existing evidence.",
+                                )
+                                self.health.acknowledge_split(record)
+                                self._enqueue(identity)
+                                continue
                             await self.events.record("SPLIT_REJECTED", record, str(exc))
                         self._terminating.add(identity)
                         self._launch(
