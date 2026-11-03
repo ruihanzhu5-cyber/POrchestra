@@ -328,3 +328,42 @@ class StructuredCacheTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(ranged.value["output"],"1: changed")
             with self.assertRaises(ValueError):
                 SWEToolBinding(SimpleNamespace()).prepare(n,{"action":"read_file","params":{"path":"../outside"}})
+
+
+class PartialMergeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_independent_verified_child_merges_despite_failed_sibling(self):
+        from test_runtime import RuntimeTests, MockAgentDriver
+        from porchestra.runtime.runtime import BudgetLedger
+        from porchestra.runtime.types import StepOutcome
+        fixture = RuntimeTests(); await fixture.asyncSetUp(); self.addCleanup(fixture.doCleanups)
+        async def paths(diff):
+            base=fixture.backend.snapshots[diff.base.artifact_ref]; tip=fixture.backend.snapshots[diff.tip.artifact_ref]
+            return tuple(k for k in set(base)|set(tip) if base.get(k)!=tip.get(k))
+        fixture.backend.changed_paths = paths
+        class Requester(MockAgentDriver):
+            async def step(self, record):
+                self.steps += 1
+                if record.depth == 0 and self.steps == 1:
+                    a=replace(record.contract,objective="repair component A",contract_id="a",parent_contract_id=record.contract.contract_id,scope=("fix.py",),independent=True,budget_limit=25000)
+                    b=replace(a,objective="repair component B",contract_id="b",scope=("other.py",),acceptance_checks=(AcceptanceCheck("b", "pytest other.py"),))
+                    return StepOutcome("spawn",child_contracts=(a,b))
+                if record.node_id == "b": return StepOutcome("stop",reason="cannot repair sibling")
+                if record.depth > 0:self.backend.files[record.workspace_id]["fix.py"]="fixed"
+                return StepOutcome("finish",tokens_used=1)
+        runtime=fixture.build(factory=lambda record: Requester(fixture.backend))
+        fixture.root=replace(fixture.root,budget_limit=100000);runtime.budget=BudgetLedger(100000)
+        result=await runtime.run(fixture.root,workspace_id="root")
+        self.assertEqual(result.outcome,"verified")
+        self.assertEqual(runtime.registry.results["b"].outcome,"failed")
+        self.assertEqual(fixture.backend.files["root"]["fix.py"],"fixed")
+        self.assertEqual(sum(e["event"]=="MERGE_COMMIT" for e in fixture.records()),1)
+
+    async def test_candidate_artifact_is_readable_without_becoming_trusted(self):
+        from porchestra.runtime.lifecycle import ArtifactReader
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); artifact=root/"candidate.patch";artifact.write_text("unverified change")
+            reader=ArtifactReader((root,));reader.register(str(artifact),trusted=False)
+            result=await reader.read_artifact(str(artifact))
+            self.assertEqual(result["trust"],"candidate_unverified")
+            self.assertEqual(result["output"],"unverified change")
+            with self.assertRaises(PermissionError):await reader.read_artifact(str(root.parent/"escape"))

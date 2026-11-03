@@ -199,7 +199,15 @@ class POrchestraAgentDriver:
             if name == "revise":
                 await self.inject_context(node.node_id, RUNTIME_INSTRUCTION)
                 return self._outcome("continue", reason="runtime guidance supplied")
-            prepared = self.binding.prepare(node, action)
+            if name == "read_artifact":
+                reader = getattr(self.gateway, "artifact_reader", None)
+                if reader is None:
+                    raise PermissionError("No artifact reader configured")
+                async def read_artifact():
+                    return await reader.read_artifact(**params)
+                prepared = PreparedTool(ToolRequest(node.run_id, node.node_id, node.workspace_id, name, params), read_artifact)
+            else:
+                prepared = self.binding.prepare(node, action)
             result = await self.gateway.execute(prepared.request, prepared.call)
             if result.cache_hit:
                 logging.getLogger(__name__).info(

@@ -206,7 +206,7 @@ class MiniSWESubAgent(BaseAgent):
 
         call = assistant_calls[0]
         name = str(call["function"]["name"]).lower()
-        if name not in {"bash", "read_file", "read_range", "search"}:
+        if name not in {"bash", "read_file", "read_range", "search", "read_artifact"}:
             return {
                 "action": "error",
                 "params": {"message": f"Unknown native tool: {name or 'missing'}"},

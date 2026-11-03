@@ -121,6 +121,33 @@ class EventSink:
         return replace(result, artifact_refs=(*result.artifact_refs, str(path)))
 
 
+class ArtifactReader:
+    """Only registered durable result files can be read, including untrusted candidates."""
+    def __init__(self, roots):
+        self.roots = tuple(Path(root).resolve() for root in roots)
+        self.allowed = {}
+
+    def register(self, ref, *, trusted=False):
+        path = Path(ref)
+        resolved = path.resolve()
+        if path.is_file() and not path.is_symlink() and any(resolved.is_relative_to(root) for root in self.roots):
+            self.allowed[str(resolved)] = trusted
+
+    async def read_artifact(self, ref, *, offset=0, limit=16000):
+        path = Path(ref).resolve()
+        if str(path) not in self.allowed or not any(path.is_relative_to(root) for root in self.roots):
+            raise PermissionError("Artifact reference is not registered or escapes the allowed roots")
+        if offset < 0 or limit < 1 or limit > 64000:
+            raise ValueError("Invalid artifact read bounds")
+        def read():
+            with path.open('rb') as stream:
+                stream.seek(offset); data = stream.read(limit)
+            return {"output":data.decode(errors="replace"), "exit_code":0,
+                    "trust":"verified_child_only" if self.allowed[str(path)] else "candidate_unverified",
+                    "next_offset":offset+len(data)}
+        return await asyncio.to_thread(read)
+
+
 class StateMerger:
     def __init__(
         self, workspaces: WorkspaceBackend, board: GlobalMemoryBoard, events: EventSink
@@ -132,6 +159,7 @@ class StateMerger:
         self._release_locks: dict[str, asyncio.Lock] = {}
         self._merged: dict[tuple[str, str], MergeReport] = {}
         self._released: set[str] = set()
+        self.artifacts = ArtifactReader((getattr(workspaces, "root", Path(events.path).parent), Path(events.path).parent / "artifacts"))
 
     async def collect(
         self,
@@ -174,9 +202,18 @@ class StateMerger:
             artifact_refs=(diff.artifact_ref, diff.tip.artifact_ref),
             handoff=summarize(node, change_summary=change_summary, outcome=outcome + ": " + reason if outcome != "verified" else outcome, checks=report.checks if report else ()),
         )
-        return await self.events.persist_result(result)
+        result = await self.events.persist_result(result)
+        for ref in result.artifact_refs:
+            self.artifacts.register(ref, trusted=outcome == "verified")
+        return result
 
-    async def merge(self, parent: NodeRecord, result: NodeResult) -> MergeReport:
+    async def merge(self, parent: NodeRecord, result: NodeResult, *, scope=None) -> MergeReport:
+        if scope is not None:
+            if not scope or not hasattr(self.workspaces, "changed_paths"):
+                return MergeReport(uuid4().hex, result.node_id, parent.node_id, False, conflicts=("Independent merge requires verifiable owned paths",), artifact_refs=result.artifact_refs)
+            paths = await self.workspaces.changed_paths(result.diff)
+            if any(not any(path == owned or path.startswith(owned.rstrip("/") + "/") for owned in scope) for path in paths):
+                return MergeReport(uuid4().hex, result.node_id, parent.node_id, False, conflicts=("Independent patch exceeds declared scope",), artifact_refs=result.artifact_refs)
         key = (parent.node_id, result.node_id)
         lock = self._merge_locks.setdefault(parent.node_id, asyncio.Lock())
         async with lock:

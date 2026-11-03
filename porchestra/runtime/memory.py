@@ -360,7 +360,7 @@ _READ_TOOLS = frozenset(
     }
 )
 _DYNAMIC_READS = frozenset(
-    {"get_time", "current_time", "get_notifications", "list_notifications"}
+    {"get_time", "current_time", "get_notifications", "list_notifications", "read_artifact"}
 )
 
 

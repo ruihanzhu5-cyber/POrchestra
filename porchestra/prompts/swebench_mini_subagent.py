@@ -195,6 +195,7 @@ def build_runtime_read_tools():
         if name == "search":
             properties["query"] = {"type":"string"}; required += ["query"]
         tools.append({"type":"function", "function":{"name":name,"description":description,"parameters":{"type":"object","properties":properties,"required":required}}})
+    tools.append({"type":"function", "function":{"name":"read_artifact","description":"Read a supplied result/patch reference; candidate_unverified content is not trusted code.","parameters":{"type":"object","properties":{"ref":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"}},"required":["ref"]}}})
     return tools
 
 

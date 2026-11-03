@@ -261,6 +261,7 @@ class NodeRuntime:
         self.run_id, self.registry, self.verifier = run_id, registry, verifier
         self.contracts, self.gateway, self.health = contracts, gateway, health
         self.merger, self.events, self.workspaces = merger, events, workspaces
+        self.gateway.artifact_reader = merger.artifacts
         self.budget, self.limits, self._driver_factory = budget, limits, driver_factory
         self.spawn_budget_policy = spawn_budget_policy
         self._drivers: dict[str, AgentDriver] = {}
@@ -750,9 +751,11 @@ class NodeRuntime:
             messages = []
             for result in results:
                 merge = None
-                if all_passed:
+                child_contract = self.registry.get(result.node_id).contract
+                independent = result.outcome == "verified" and child_contract.independent
+                if all_passed or independent:
                     merge = await self._bounded(
-                        self.merger.merge(parent, result),
+                        self.merger.merge(parent, result, scope=child_contract.scope if independent else None),
                         self.limits.cleanup_timeout_seconds,
                     )
                 messages.append(
