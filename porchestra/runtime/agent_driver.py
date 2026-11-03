@@ -6,6 +6,7 @@ import asyncio
 import inspect
 import json
 import logging
+import hashlib
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Protocol
@@ -73,6 +74,7 @@ class POrchestraAgentDriver:
         self._closed = False
         self._step_task: asyncio.Task | None = None
         self._node_id: str | None = None
+        self._progress: dict[str, Any] = {}
         context = str(getattr(session, "context", ""))
         if RUNTIME_INSTRUCTION not in context:
             session.context = (context + "\n" + RUNTIME_INSTRUCTION).strip()
@@ -104,11 +106,16 @@ class POrchestraAgentDriver:
                 cumulative_tokens=total,
             )
         return StepOutcome(
-            kind, reason=reason, child_contracts=children, tokens_used=used
+            kind,
+            reason=reason,
+            child_contracts=children,
+            tokens_used=used,
+            progress=self._progress,
         )
 
     async def step(self, node: NodeRecord) -> StepOutcome:
         self._node_id = node.node_id
+        self._progress = {}
         if self._closed:
             raise RuntimeError("Driver is closed")
         if node.steps_used >= self.max_steps:
@@ -201,6 +208,14 @@ class POrchestraAgentDriver:
                 step=node.steps_used + 1,
                 annotation=result.annotation,
             )
+            self._progress = {
+                "tool": prepared.request.tool_name,
+                "arguments": prepared.request.args,
+                "exit_code": self.observation.get("exit_code"),
+                "output_digest": hashlib.sha256(
+                    str(self.observation.get("output", result.value)).encode()
+                ).hexdigest(),
+            }
             await self.session.record_transition(
                 action=action,
                 observation_after=self.observation,

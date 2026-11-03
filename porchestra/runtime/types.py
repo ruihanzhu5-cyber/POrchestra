@@ -113,6 +113,8 @@ class NodeRecord:
     health_split_version: int | None = None  # Latch: once per contract version.
     wait_reason: str | None = None
     checkpoint_ref: str | None = None
+    progress_seen: set[str] = field(default_factory=set)
+    progress_log: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -121,6 +123,7 @@ class StepOutcome:
     reason: str = ""
     child_contracts: tuple[TaskContract, ...] = ()
     tokens_used: int = 0  # Driver supplies actual input + output usage for this step.
+    progress: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -129,6 +132,7 @@ class HealthDecision:
     reason: str
     unchanged_diff_steps: int
     budget_ratio: float
+    status: str = "investigating"
 
 
 @dataclass(frozen=True)

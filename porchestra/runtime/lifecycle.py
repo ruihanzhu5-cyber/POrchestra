@@ -23,6 +23,7 @@ from .types import (
 )
 
 EventName = Literal[
+    "PROGRESS",
     "SPAWN",
     "SLEEP",
     "VERIFY_PASS",

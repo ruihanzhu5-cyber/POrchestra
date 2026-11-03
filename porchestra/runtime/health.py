@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import hashlib
+import json
 
 from .types import HealthDecision, NodeRecord
 
@@ -26,28 +28,37 @@ class HealthMonitor:
     def __init__(self, policy: HealthPolicy = HealthPolicy()) -> None:
         self.policy = policy
 
-    def observe(self, node: NodeRecord, *, diff_fingerprint: str) -> HealthDecision:
-        """Compare full diff fingerprint, not nonempty diff; trigger at >=5 or >=80%.
+    def observe(
+        self, node: NodeRecord, *, diff_fingerprint: str, progress=None
+    ) -> HealthDecision:
+        """Track observed tool/result novelty as well as workspace changes.
 
-        Initial snapshot establishes baseline. No-diff reads count toward stagnation.
-        For non-Git ARE duties the workspace adapter supplies an observable-state
-        fingerprint with the same change semantics. Never inspect hidden oracle state.
+        Missing driver evidence is conservative: identical empty steps repeat.
+        Novel reads/commands/errors are progress even when Git has no new diff.
         """
         if type(node.tokens_used) is not int or node.tokens_used < 0:
             raise ValueError("tokens_used must be a nonnegative integer")
         if node.contract.budget_limit <= 0:
             raise ValueError("Contract token budget must be positive")
-        if node.last_diff_fingerprint is None:
-            node.unchanged_diff_steps = 0
-        elif node.last_diff_fingerprint == diff_fingerprint:
+        evidence = {**(progress or {}), "diff": diff_fingerprint}
+        fingerprint = hashlib.sha256(
+            json.dumps(evidence, sort_keys=True, default=str).encode()
+        ).hexdigest()
+        # A new read range, command, result/error or diff is observable progress.
+        # Cycling through previously seen evidence still counts as repetition.
+        if fingerprint in node.progress_seen:
             node.unchanged_diff_steps += 1
         else:
-            node.unchanged_diff_steps = 0
+            node.unchanged_diff_steps = 1
+        node.progress_seen.add(fingerprint)
+        node.progress_log.append({**evidence, "fingerprint": fingerprint})
         node.last_diff_fingerprint = diff_fingerprint
         ratio = node.tokens_used / node.contract.budget_limit
         reasons = []
         if node.unchanged_diff_steps >= self.policy.stagnant_steps:
-            reasons.append(f"stagnation:{node.unchanged_diff_steps} unchanged steps")
+            reasons.append(
+                f"stagnation:{node.unchanged_diff_steps} repeated progress signals"
+            )
         if ratio >= self.policy.overload_ratio:
             reasons.append(
                 f"token_budget:{node.tokens_used}/{node.contract.budget_limit}"
@@ -58,6 +69,9 @@ class HealthMonitor:
             "; ".join(reasons),
             node.unchanged_diff_steps,
             ratio,
+            "circling"
+            if node.unchanged_diff_steps >= self.policy.stagnant_steps
+            else "investigating",
         )
 
     def acknowledge_split(self, node: NodeRecord) -> None:

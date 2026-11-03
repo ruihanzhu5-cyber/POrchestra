@@ -256,7 +256,17 @@ class NodeRuntime:
                 for identity, record in self.registry.nodes.items():
                     record.tokens_used = self.budget.used_by_node[identity]
             fingerprint = await self.workspaces.diff_fingerprint(node.workspace_id)
-            return outcome, self.health.observe(node, diff_fingerprint=fingerprint)
+            decision = self.health.observe(
+                node, diff_fingerprint=fingerprint, progress=outcome.progress
+            )
+            await self.events.record(
+                "PROGRESS",
+                node,
+                decision.status,
+                progress=node.progress_log[-1],
+                repeated_steps=decision.unchanged_diff_steps,
+            )
+            return outcome, decision
 
         return await self._bounded(execute(), self.limits.step_timeout_seconds)
 
