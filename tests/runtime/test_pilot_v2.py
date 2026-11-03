@@ -281,3 +281,50 @@ class HandoffTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(data), {"read_locations","changes","checks_run","unresolved_issues","next_steps"})
         self.assertEqual(data["read_locations"][0]["arguments"]["path"], "fix.py")
         self.assertEqual(data["changes"]["state"], "inherited_from_parent")
+
+
+class StructuredCacheTests(unittest.IsolatedAsyncioTestCase):
+    async def test_real_binding_shares_snapshot_reads_and_invalidates_after_edit(self):
+        from types import SimpleNamespace
+        from porchestra.runtime.benchmark_bindings import SWEToolBinding
+        from porchestra.runtime.git_workspace import GitWorkspaceBackend
+        from porchestra.runtime.memory import ToolGateway, GlobalMemoryBoard, ToolRequest
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)/"repo"; root.mkdir()
+            for args in (("init",), ("config","user.name","test"),("config","user.email","test@local")):
+                subprocess.run(["git","-C",str(root),*args],check=True,capture_output=True)
+            (root/"a.py").write_text("original\n")
+            subprocess.run(["git","-C",str(root),"add","."],check=True,capture_output=True)
+            subprocess.run(["git","-C",str(root),"commit","-m","base"],check=True,capture_output=True)
+            backend = GitWorkspaceBackend(str(Path(temp)/"artifacts"))
+            base = await backend.snapshot(str(root))
+            fork = await backend.fork(base,node_id="child")
+            n = replace(node(), workspace_id=str(root), contract=replace(node().contract,allowed_tools=("aci_command",)))
+            child = replace(n,node_id="child",workspace_id=fork)
+            calls = 0
+            original_git = backend._git
+            async def counted(*args,**kwargs):
+                nonlocal calls
+                if len(args)>1 and args[1]=="show": calls += 1
+                return await original_git(*args,**kwargs)
+            backend._git = counted
+            gateway = ToolGateway(GlobalMemoryBoard.instance())
+            async def read(record):
+                manager=SimpleNamespace(executor=SimpleNamespace(workspaces=backend))
+                prepared=SWEToolBinding(manager).prepare(record,{"action":"read_file","params":{"path":"a.py"}})
+                return await gateway.execute(prepared.request,prepared.call)
+            first=await read(n); second=await read(child)
+            self.assertFalse(first.cache_hit);self.assertTrue(second.cache_hit);self.assertEqual(calls,1)
+            async def edit():
+                (root/"a.py").write_text("changed\n")
+                return {"exit_code":0}
+            await gateway.execute(ToolRequest(n.run_id,n.node_id,n.workspace_id,"write"),edit)
+            changed=await read(n)
+            self.assertFalse(changed.cache_hit);self.assertEqual(changed.value["output"],"changed\n")
+            unchanged=await read(child)
+            self.assertTrue(unchanged.cache_hit);self.assertEqual(unchanged.value["output"],"original\n")
+            prepared=SWEToolBinding(SimpleNamespace(executor=SimpleNamespace(workspaces=backend))).prepare(n,{"action":"read_range","params":{"path":"a.py","start":1,"end":1}})
+            ranged=await gateway.execute(prepared.request,prepared.call)
+            self.assertEqual(ranged.value["output"],"1: changed")
+            with self.assertRaises(ValueError):
+                SWEToolBinding(SimpleNamespace()).prepare(n,{"action":"read_file","params":{"path":"../outside"}})

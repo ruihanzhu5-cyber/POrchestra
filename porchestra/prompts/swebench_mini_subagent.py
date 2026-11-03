@@ -182,7 +182,20 @@ def build_mini_swe_bash_tool(workspace_path: str = "/testbed") -> list[dict[str,
                 },
             },
         }
-    ]
+    ] + build_runtime_read_tools()
+
+
+def build_runtime_read_tools():
+    tools = []
+    for name, description in (("read_file", "Read a repository file; prefer this cached tool over bash cat."), ("read_range", "Read a numbered line range; prefer this over bash sed."), ("search", "Search literal text in versioned repository content; prefer this over bash grep.")):
+        properties = {"path": {"type":"string", "description":"Repository-relative path; use . for repository-wide search."}}
+        required = ["path"]
+        if name == "read_range":
+            properties.update(start={"type":"integer"}, end={"type":"integer"}); required += ["start", "end"]
+        if name == "search":
+            properties["query"] = {"type":"string"}; required += ["query"]
+        tools.append({"type":"function", "function":{"name":name,"description":description,"parameters":{"type":"object","properties":properties,"required":required}}})
+    return tools
 
 
 def _observation_text(observation: Any) -> str:

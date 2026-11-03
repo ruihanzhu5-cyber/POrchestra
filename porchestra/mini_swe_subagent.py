@@ -206,7 +206,7 @@ class MiniSWESubAgent(BaseAgent):
 
         call = assistant_calls[0]
         name = str(call["function"]["name"]).lower()
-        if name != "bash":
+        if name not in {"bash", "read_file", "read_range", "search"}:
             return {
                 "action": "error",
                 "params": {"message": f"Unknown native tool: {name or 'missing'}"},
@@ -222,6 +222,8 @@ class MiniSWESubAgent(BaseAgent):
                 "reasoning": content,
                 "_parse_error": "invalid_native_tool_json",
             }
+        if name != "bash" and isinstance(arguments, dict):
+            return {"action":name, "params":arguments, "reasoning":content, "_native_tool_call":True}
         command = arguments.get("command") if isinstance(arguments, dict) else None
         if not isinstance(command, str) or not command.strip():
             return {

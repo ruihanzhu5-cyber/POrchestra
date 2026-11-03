@@ -89,6 +89,8 @@ class SWEToolBinding:
         self.manager = manager
 
     def prepare(self, node: NodeRecord, action: dict[str, Any]) -> PreparedTool:
+        if action.get("action") in {"read_file", "read_range", "search"}:
+            return self._structured_read(node, action)
         if action.get("action") != "aci_command":
             raise ValueError("SWE environment actions must use aci_command")
         if "aci_command" not in node.contract.allowed_tools:
@@ -148,6 +150,44 @@ class SWEToolBinding:
             },
         )
         return PreparedTool(request, execute)
+
+    def _structured_read(self, node, action):
+        if "aci_command" not in node.contract.allowed_tools:
+            raise PermissionError("SWE repository access was not granted")
+        name, params = action["action"], action.get("params", {})
+        relative = str(params.get("path", "." if name == "search" else ""))
+        path = Path(relative)
+        if not relative or path.is_absolute() or ".." in path.parts or "\\" in relative or ".git" in path.parts:
+            raise ValueError("Structured reads require a relative repository path")
+        workspaces = self.manager.executor.workspaces
+        live = Path(node.workspace_id).resolve()
+        (live / path).resolve().relative_to(live)
+        start, end = int(params.get("start", 1)), int(params.get("end", 200))
+        if start < 1 or end < start or end - start > 2000:
+            raise ValueError("Invalid read range (maximum 2001 lines)")
+        query = str(params.get("query", ""))
+        if name == "search" and not query:
+            raise ValueError("search requires a literal query")
+        args = {"path":path.as_posix()}
+        if name == "read_range": args.update(start=start,end=end)
+        if name == "search": args["query"] = query
+        pinned = None
+        async def version():
+            nonlocal pinned
+            pinned = await workspaces.snapshot(node.workspace_id)
+            return str(workspaces.root.resolve()), pinned.revision
+        async def read():
+            if name == "search":
+                output, code = await workspaces._git(str(workspaces._store), "grep", "-n", "-I", "-F", "-e", query, pinned.revision, "--", path.as_posix(), allow_failure=True)
+                if code == 1: return {"output":"", "exit_code":0}
+                text = output.decode(errors="replace").replace(pinned.revision + ":", "")
+                return {"output":text, "exit_code":code}
+            output, code = await workspaces._git(str(workspaces._store), "show", f"{pinned.revision}:{path.as_posix()}", allow_failure=True)
+            text = output.decode(errors="replace")
+            if code == 0 and name == "read_range":
+                text = "\n".join(f"{i}: {line}" for i,line in enumerate(text.splitlines(),1) if start <= i <= end)
+            return {"output":text, "exit_code":code}
+        return PreparedTool(ToolRequest(node.run_id, node.node_id, node.workspace_id, name, args, version_provider=version), read)
 
     def observation(self, value: Any, *, step: int, annotation: str) -> dict[str, Any]:
         return {

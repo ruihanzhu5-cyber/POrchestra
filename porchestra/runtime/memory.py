@@ -33,6 +33,7 @@ class ToolRequest:
     tool_name: str
     args: dict[str, Any] = field(default_factory=dict)
     force_refresh: bool = False
+    version_provider: Callable[[], Awaitable[tuple[str, str]]] | None = None
 
 
 @dataclass(frozen=True)
@@ -345,6 +346,7 @@ _READ_TOOLS = frozenset(
         "view_file",
         "read",
         "read_file",
+        "read_range",
         "read_document",
         "cat",
         "search",
@@ -428,6 +430,23 @@ class ToolGateway:
             await self.authorize(request)
         mode = self.classify(request)
         gate = self.board._gate(request.workspace_id)
+        if mode == "read" and request.version_provider is not None:
+            # The provider pins immutable Git objects while this workspace is read-locked.
+            # The producer reads the durable object store, so waiter cancellation cannot
+            # expose a changing/deleted live workspace to an in-flight read.
+            async with gate.hold(write=False):
+                namespace, revision = await request.version_provider()
+                if request.force_refresh:
+                    self.board.invalidate(namespace)
+                generation = self.board.generation(namespace)
+                payload = [request.run_id, namespace, revision, request.tool_name, request.args, generation]
+                key = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+                async def immutable_read():
+                    value = await call()
+                    return CacheEntry(namespace, generation, value, self._successful(value))
+                entry, hit = await self.board.get_or_compute(key, immutable_read, workspace_id=namespace)
+                return ToolResult(entry.value, cache_hit=hit, annotation="[Cache Hit]" if hit else "")
+
         if mode == "write":
             async with gate.hold(write=True):
                 self.board.invalidate(request.workspace_id)

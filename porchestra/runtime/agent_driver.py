@@ -33,7 +33,8 @@ class ToolBinding(Protocol):
 
 
 RUNTIME_INSTRUCTION = """
-NodeRuntime owns delegation, budgets and verification. finish is a verification
+NodeRuntime owns delegation, budgets and verification.
+Prefer read_file/read_range/search for repository investigation; Bash is for execution/writes. finish is a verification
 request; a rejected finish must be repaired in this SAME session. Do not submit
 to the benchmark grader. To delegate, emit a JSON action with action="spawn" and
 params.children containing objects with objective, acceptance_checks, disjoint scope
