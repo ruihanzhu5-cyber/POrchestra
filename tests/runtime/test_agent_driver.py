@@ -438,6 +438,7 @@ class AgentDriverTests(unittest.IsolatedAsyncioTestCase):
             )
             outcome = await self.driver(session).step(self.record)
         self.assertEqual(outcome.kind, "spawn")
+        self.assertFalse(session.llm.config.extra_body["parallel_tool_calls"])
         self.assertEqual(outcome.tokens_used, 8)
         self.assertEqual(len(outcome.child_contracts), 2)
         self.assertFalse(session._pending_tool_call_ids)
@@ -584,7 +585,7 @@ class AgentDriverTests(unittest.IsolatedAsyncioTestCase):
             model="mock",
             temperature=0,
             top_p=1,
-            extra_body={"thinking": {"type": "disabled"}},
+            extra_body={"thinking": {"type": "disabled"}, "parallel_tool_calls": False},
         )
         llm.max_completion_tokens = 4096
         llm.aclient = client
@@ -595,7 +596,7 @@ class AgentDriverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["content"], "")
         self.assertEqual(
             client.chat.completions.create.call_args.kwargs["extra_body"],
-            {"thinking": {"type": "disabled"}},
+            {"thinking": {"type": "disabled"}, "parallel_tool_calls": False},
         )
 
 

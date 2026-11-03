@@ -198,7 +198,7 @@ class MiniSWESubAgent(BaseAgent):
             return {
                 "action": "error",
                 "params": {
-                    "message": f"Expected exactly one bash tool call, got {len(assistant_calls)}"
+                    "message": f"Expected exactly one registered native tool call, got {len(assistant_calls)}"
                 },
                 "reasoning": content,
                 "_parse_error": "invalid_native_tool_count",

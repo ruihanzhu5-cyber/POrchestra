@@ -407,5 +407,9 @@ def create_legacy_session(
         ),
     )
     session.llm.max_completion_tokens = 4096
+    session.llm.config.extra_body = {
+        **getattr(session.llm.config, "extra_body", {}),
+        "parallel_tool_calls": False,
+    }
     session.reset(basic_info)
     return session

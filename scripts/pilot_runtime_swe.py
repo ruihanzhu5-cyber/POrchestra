@@ -103,7 +103,10 @@ async def worker(args):
                 "temperature": 0,
                 "top_p": 1,
                 "timeout": 90,
-                "extra_body": {"thinking": {"type": "disabled"}},
+                "extra_body": {
+                    "thinking": {"type": "disabled"},
+                    "parallel_tool_calls": False,
+                },
             }
         }
     )
