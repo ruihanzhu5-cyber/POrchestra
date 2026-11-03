@@ -535,3 +535,42 @@ class CheckExitTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("framework_check", result.reason)
         self.assertEqual(fixture.drivers[fixture.root.contract_id].steps, 1)
         self.assertEqual(fixture.drivers[fixture.root.contract_id].messages, [])
+
+
+class NativePromptTests(unittest.TestCase):
+    def test_registered_reads_match_prompt_and_native_parser(self):
+        from porchestra.prompts.swebench_mini_subagent import (
+            MINI_SWE_TASK_PROMPT,
+            MINI_SWE_SYSTEM_PROMPT,
+            build_mini_swe_bash_tool,
+        )
+        from porchestra.mini_swe_subagent import MiniSWESubAgent
+
+        self.assertIn("read_file", MINI_SWE_SYSTEM_PROMPT)
+        self.assertNotIn("bash` tool for repository inspection", MINI_SWE_TASK_PROMPT)
+        tools = build_mini_swe_bash_tool("/workspace/root")
+        self.assertTrue(
+            {"bash", "read_file", "read_range", "search", "read_artifact"}.issubset(
+                {t["function"]["name"] for t in tools}
+            )
+        )
+        import json
+
+        session = MiniSWESubAgent.model_construct()
+        session._messages = []
+        action = session._record_and_parse_payload(
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_read",
+                        "name": "read_range",
+                        "arguments": json.dumps(
+                            {"path": "a.py", "start": 1, "end": 10}
+                        ),
+                    }
+                ],
+            },
+            current_step=1,
+        )
+        self.assertEqual(action["action"], "read_range")
