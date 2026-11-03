@@ -2,6 +2,7 @@ import time
 import unittest
 from dataclasses import replace
 from porchestra.runtime.contracts import ContractGenerator
+from porchestra.runtime.runtime import BudgetLedger, SpawnBudgetPolicy
 
 from porchestra.runtime.health import HealthMonitor
 from porchestra.runtime.types import (
@@ -67,6 +68,46 @@ class DelegationTests(unittest.IsolatedAsyncioTestCase):
             ),
             (),
         )
+
+
+class SpawnBudgetTests(unittest.IsolatedAsyncioTestCase):
+    def test_732_tokens_rejected_before_allocation(self):
+        n = node()
+        ledger = BudgetLedger(n.contract.budget_limit)
+        ledger.register_root("root", n.contract)
+        ledger.charge("root", tokens=n.contract.budget_limit - 732)
+        child = replace(n.contract, contract_id="child", budget_limit=732)
+        policy = SpawnBudgetPolicy()
+        with self.assertRaisesRegex(ValueError, "startup budget"):
+            ledger.validate_spawn(
+                "root",
+                (child,),
+                minimums=[policy.minimum_child(child)],
+                parent_reserve=policy.parent_reserve(n.contract, 732),
+            )
+        self.assertNotIn("child", ledger.limits_by_node)
+
+    def test_parent_reserve_and_sufficient_children(self):
+        n = node()
+        ledger = BudgetLedger(n.contract.budget_limit)
+        ledger.register_root("root", n.contract)
+        child = replace(n.contract, contract_id="child", budget_limit=20000)
+        policy = SpawnBudgetPolicy()
+        reserve = policy.parent_reserve(n.contract, 100000)
+        ledger.validate_spawn(
+            "root",
+            (child,),
+            minimums=[policy.minimum_child(child)],
+            parent_reserve=reserve,
+        )
+        too_large = replace(child, budget_limit=95000)
+        with self.assertRaisesRegex(ValueError, "parent integration"):
+            ledger.validate_spawn(
+                "root",
+                (too_large,),
+                minimums=[policy.minimum_child(child)],
+                parent_reserve=reserve,
+            )
         a = replace(
             n.contract, contract_id="a", parent_contract_id="root", scope=("a.py",)
         )

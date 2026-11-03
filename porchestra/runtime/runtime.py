@@ -28,6 +28,36 @@ from .types import (
 
 
 @dataclass(frozen=True)
+class SpawnBudgetPolicy:
+    # Conservative byte upper bound for prompt text; not a tokenizer claim.
+    prompt_overhead_tokens: int = 4096
+    response_tokens: int = 4096
+    tool_tokens: int = 2048
+    parent_min_tokens: int = 8192
+    parent_reserve_ratio: float = 0.20
+
+    def minimum_child(self, contract: TaskContract, shared_context: str = "") -> int:
+        from dataclasses import asdict
+
+        prompt_bytes = len(
+            (json.dumps(asdict(contract), ensure_ascii=False) + shared_context).encode()
+        )
+        return (
+            prompt_bytes
+            + self.prompt_overhead_tokens
+            + self.response_tokens
+            + self.tool_tokens
+        )
+
+    def parent_reserve(self, contract: TaskContract, remaining: int) -> int:
+        return max(
+            self.parent_min_tokens,
+            math.ceil(remaining * self.parent_reserve_ratio),
+            self.minimum_child(contract),
+        )
+
+
+@dataclass(frozen=True)
 class RuntimeLimits:
     max_active: int = 4
     max_depth: int = 3
@@ -158,6 +188,20 @@ class BudgetLedger:
             self.parent_by_node[node_id] = parent_id
             self.used_by_node[node_id] = self.reserved_by_node[node_id] = 0
 
+    def validate_spawn(self, parent_id, contracts, *, minimums, parent_reserve):
+        if len(minimums) != len(contracts) or any(
+            c.budget_limit < minimum for c, minimum in zip(contracts, minimums)
+        ):
+            raise ValueError(
+                "Insufficient child startup budget (prompt + tool + response); converge instead"
+            )
+        if sum(c.budget_limit for c in contracts) + parent_reserve > self.remaining(
+            parent_id
+        ):
+            raise ValueError(
+                "Insufficient budget after reserving parent integration/verification/repair tokens; converge instead"
+            )
+
     def charge(self, node_id: str, *, tokens: int) -> None:
         if type(tokens) is not int or tokens < 0 or node_id in self._settled:
             raise ValueError(
@@ -211,11 +255,13 @@ class NodeRuntime:
         budget: BudgetLedger,
         driver_factory: Callable[[NodeRecord, ToolGateway], AgentDriver],
         limits: RuntimeLimits = RuntimeLimits(),
+        spawn_budget_policy: SpawnBudgetPolicy = SpawnBudgetPolicy(),
     ) -> None:
         self.run_id, self.registry, self.verifier = run_id, registry, verifier
         self.contracts, self.gateway, self.health = contracts, gateway, health
         self.merger, self.events, self.workspaces = merger, events, workspaces
         self.budget, self.limits, self._driver_factory = budget, limits, driver_factory
+        self.spawn_budget_policy = spawn_budget_policy
         self._drivers: dict[str, AgentDriver] = {}
         self._ready: asyncio.Queue[str] = asyncio.Queue()
         self._queued: set[str] = set()
@@ -517,6 +563,18 @@ class NodeRuntime:
             for contract in contracts:
                 self.verifier.validate_contract(contract, parent=parent.contract)
             self.contracts.validate_delegation(parent.contract, contracts)
+            context = self._child_startup_context(parent)
+            self.budget.validate_spawn(
+                parent_id,
+                contracts,
+                minimums=[
+                    self.spawn_budget_policy.minimum_child(c, context)
+                    for c in contracts
+                ],
+                parent_reserve=self.spawn_budget_policy.parent_reserve(
+                    parent.contract, self.budget.remaining(parent_id)
+                ),
+            )
             if sum(c.budget_limit for c in contracts) >= self.budget.remaining(
                 parent_id
             ):
@@ -592,6 +650,9 @@ class NodeRuntime:
         ids = await self.spawn(node_id, children, reason=trigger.reason)
         self.health.acknowledge_split(node)
         return ids
+
+    def _child_startup_context(self, parent: NodeRecord) -> str:
+        return json.dumps(parent.progress_log[-8:], ensure_ascii=False)
 
     async def request_finish(self, node_id: str) -> VerificationReport:
         node = self.registry.get(node_id)
