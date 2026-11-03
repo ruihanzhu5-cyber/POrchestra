@@ -438,14 +438,25 @@ class SWEBenchExecutor:
         self.container_id: Optional[str] = None
         self._temp_dir: Optional[Path] = None
         self._repo_path: Optional[str] = None  # Linux path in container, use str not Path
+        self._runtime_workspace_dir: Optional[Path] = None
         
         # Create logs directory
         self.logs_dir.mkdir(parents=True, exist_ok=True)
 
+    def set_runtime_workspace_directory(self, directory: Path) -> None:
+        """Configure a persistent /workspace mount before starting the container."""
+        if self.container_id:
+            raise RuntimeError("Configure the runtime mount before env.reset()")
+        self._runtime_workspace_dir = directory.resolve()
+
     async def start_container(self):
         """Start Docker container for the SWE-bench instance."""
         # Create temporary directory for workspace
-        self._temp_dir = Path(tempfile.mkdtemp(prefix=f"swebench_{self.instance.instance_id}_"))
+        if self._runtime_workspace_dir is None:
+            self._temp_dir = Path(tempfile.mkdtemp(prefix=f"swebench_{self.instance.instance_id}_"))
+        else:
+            self._temp_dir = self._runtime_workspace_dir
+            self._temp_dir.mkdir(parents=True, exist_ok=True)
         
         # Determine image name based on instance_id
         # SWE-bench official images use format: swebench/sweb.eval.x86_64.{owner}_1776_{owner}-{issue}
@@ -558,7 +569,7 @@ class SWEBenchExecutor:
             raise RuntimeError("Container not started")
 
         exec_timeout = timeout if timeout is not None else self.timeout
-        
+        proc = None
         try:
             # Use -i (interactive) to read command from stdin
             # This bypasses Windows command line length limits
@@ -589,6 +600,13 @@ class SWEBenchExecutor:
             return "Command timed out", -1
         except Exception as e:
             return f"Error executing command: {e}", -1
+        finally:
+            if proc is not None and proc.returncode is None:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+                await proc.wait()
 
     async def apply_patch(self, patch_content: str) -> Tuple[bool, str]:
         """Apply a patch to the repository."""
@@ -733,7 +751,7 @@ class SWEBenchExecutor:
             finally:
                 self.container_id = None
         
-        if self._temp_dir and self._temp_dir.exists():
+        if self._temp_dir and self._temp_dir.exists() and self._runtime_workspace_dir is None:
             try:
                 shutil.rmtree(self._temp_dir)
             except Exception as e:

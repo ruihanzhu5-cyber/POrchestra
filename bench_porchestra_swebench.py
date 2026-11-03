@@ -1,7 +1,7 @@
 """Run SWE-bench Verified with POrchestra.
 
 Usage:
-    python bench_porchestra_swebench.py --config config/benchmarks/porchestra_swebench_smoke.yaml
+    python bench_porchestra_swebench.py --check-command 'pytest tests' --dry-run
 """
 
 from __future__ import annotations
@@ -18,23 +18,47 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from aorchestra.config import SWEBenchOrchestraConfig
-from benchmark.bench_swebench import SWEBenchBenchmark, SWEBenchConfig
-from porchestra.runners.swebench_runner import SWEBenchPOrchestraRunner
+from porchestra.runners.runtime_runner import (
+    SWEBenchRuntimeRunner,
+    add_runtime_arguments,
+    runtime_options,
+)
 
 
 ROOT = Path(__file__).resolve().parent
-DEFAULT_CONFIG = ROOT / "config/benchmarks/porchestra_swebench_smoke.yaml"
+DEFAULT_CONFIG = ROOT / "config/example/benchmarks/porchestra_swebench.yaml"
 
 
 async def main() -> int:
     parser = argparse.ArgumentParser(description="Run SWE-bench with POrchestra")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG))
     parser.add_argument("--max_concurrency", type=int, default=None)
-    parser.add_argument("--tasks", type=str, default=None, help="Comma-separated instance IDs")
+    parser.add_argument(
+        "--tasks", type=str, default=None, help="Comma-separated instance IDs"
+    )
     parser.add_argument("--task_timeout_seconds", type=int, default=None)
+    add_runtime_arguments(parser)
     args = parser.parse_args()
 
     cfg = SWEBenchOrchestraConfig.load(args.config)
+    options = runtime_options(args, args.config)
+    if args.dry_run:
+        print(
+            json.dumps(
+                {
+                    "runner": "NodeRuntime",
+                    "benchmark": "swebench",
+                    "token_budget": options.token_budget,
+                    "node_concurrency": options.node_concurrency,
+                    "checks": [check.command for check in options.acceptance_checks],
+                    "topology": "<trajectory>/<timestamp>/<instance>/topology.jsonl",
+                },
+                indent=2,
+            )
+        )
+        return 0
+    from benchmark.bench_swebench import SWEBenchBenchmark, SWEBenchConfig
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     cfg.timestamp = timestamp
     result_folder = cfg.result_folder
@@ -65,10 +89,14 @@ async def main() -> int:
 
     selected_ids: set[str] | None = None
     if cfg.selected_ids_file:
-        selected_ids = set(json.loads(cfg.selected_ids_file.read_text(encoding="utf-8")))
+        selected_ids = set(
+            json.loads(cfg.selected_ids_file.read_text(encoding="utf-8"))
+        )
     if args.tasks:
         command_ids = {item.strip() for item in args.tasks.split(",") if item.strip()}
-        selected_ids = command_ids if selected_ids is None else selected_ids & command_ids
+        selected_ids = (
+            command_ids if selected_ids is None else selected_ids & command_ids
+        )
     if selected_ids is not None:
         levels = [level for level in levels if str(level.get("id")) in selected_ids]
     if cfg.max_tasks is not None:
@@ -77,19 +105,14 @@ async def main() -> int:
         print("No SWE-bench instances selected.", file=sys.stderr)
         return 1
 
-    runner = SWEBenchPOrchestraRunner(
+    runner = SWEBenchRuntimeRunner(
         benchmark=benchmark,
         main_model=cfg.main_model,
         sub_models=cfg.sub_models,
-        max_attempts=cfg.max_attempts,
-        max_total_steps=cfg.max_total_steps,
-        subagent_memory_max_records=cfg.subagent_memory_max_records,
-        subagent_memory_mode=cfg.subagent_memory_mode,
+        options=options,
+        max_steps=cfg.max_total_steps,
         subagent_backend=cfg.subagent_backend,
-        subagent_observation_max_chars=cfg.subagent_observation_max_chars,
-        subagent_memory_max_chars=cfg.subagent_memory_max_chars,
-        subagent_memory_record_max_chars=cfg.subagent_memory_record_max_chars,
-        task_timeout_seconds=args.task_timeout_seconds,
+        task_timeout_seconds=args.task_timeout_seconds or cfg.task_timeout_seconds,
     )
     results = await runner.run_levels(
         levels=levels,
