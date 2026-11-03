@@ -260,12 +260,24 @@ class GitWorkspaceBackend:
                 await self.release(staging)
 
     async def changed_paths(self, diff):
-        output, _ = await self._git(str(self._store), "diff", "--name-only", "-z", diff.base.revision, diff.tip.revision, "--")
-        return tuple(path.decode(errors="replace") for path in output.split(b"\0") if path)
+        output, _ = await self._git(
+            str(self._store),
+            "diff",
+            "--name-only",
+            "-z",
+            diff.base.revision,
+            diff.tip.revision,
+            "--",
+        )
+        return tuple(
+            path.decode(errors="replace") for path in output.split(b"\0") if path
+        )
 
     async def describe_changes(self, base, workspace_id):
         current = await self.snapshot(workspace_id)
-        output, _ = await self._git(workspace_id, "diff", "--stat", base.revision, current.revision, "--")
+        output, _ = await self._git(
+            workspace_id, "diff", "--stat", base.revision, current.revision, "--"
+        )
         return output.decode(errors="replace")
 
     async def release(self, workspace_id: str) -> None:

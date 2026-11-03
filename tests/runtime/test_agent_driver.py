@@ -1,4 +1,3 @@
-import asyncio
 import contextlib
 import importlib
 import io
@@ -12,6 +11,14 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
+from test_runtime import MockCheckRunner, MockWorkspaceBackend
+
+from porchestra.runners.runtime_runner import (
+    GAIARuntimeRunner,
+    PreparedTask,
+    RuntimeOptions,
+    SWEBenchRuntimeRunner,
+)
 from porchestra.runtime import (
     AcceptanceCheck,
     GlobalMemoryBoard,
@@ -30,13 +37,6 @@ from porchestra.runtime.benchmark_bindings import (
 )
 from porchestra.runtime.memory import ToolRequest
 from porchestra.runtime.types import NodeRecord, WorkspaceSnapshot
-from porchestra.runners.runtime_runner import (
-    GAIARuntimeRunner,
-    PreparedTask,
-    RuntimeOptions,
-    SWEBenchRuntimeRunner,
-)
-from test_runtime import MockCheckRunner, MockWorkspaceBackend
 
 
 def node():
@@ -180,7 +180,7 @@ class AgentDriverTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_missing_usage_does_not_invent_zero_tokens(self):
         session = ReplaySession([{"action": "finish", "params": {}}])
-        session.llm.get_usage_summary = lambda: {}
+        session.llm.get_usage_summary = dict
         with self.assertRaisesRegex(ValueError, "actual cumulative"):
             await self.driver(session).step(self.record)
 
@@ -335,10 +335,20 @@ class AgentDriverTests(unittest.IsolatedAsyncioTestCase):
 
         def session_factory(record, **kwargs):
             children = [
-                {"objective":f"repair component {i}", "acceptance_checks":[f"pytest component_{i}"], "scope":[f"component_{i}"], "budget_limit":20000}
-                for i in range(2)]
-            actions = ([{"action":"view"}] * 5 + [{"action":"spawn","params":{"children":children}}]
-                if record.parent_id is None else [{"action":"edit"}]) + [{"action":"finish","params":{}}]
+                {
+                    "objective": f"repair component {i}",
+                    "acceptance_checks": [f"pytest component_{i}"],
+                    "scope": [f"component_{i}"],
+                    "budget_limit": 20000,
+                }
+                for i in range(2)
+            ]
+            actions = (
+                [{"action": "view"}] * 5
+                + [{"action": "spawn", "params": {"children": children}}]
+                if record.parent_id is None
+                else [{"action": "edit"}]
+            ) + [{"action": "finish", "params": {}}]
             session = ReplaySession(actions)
             sessions.append(session)
             return session
@@ -541,7 +551,7 @@ class AgentDriverTests(unittest.IsolatedAsyncioTestCase):
         executor.container_id = "mock-container"
         process = SimpleNamespace(
             returncode=None,
-            communicate=AsyncMock(side_effect=asyncio.TimeoutError()),
+            communicate=AsyncMock(side_effect=TimeoutError()),
             kill=lambda: setattr(process, "returncode", -9),
             wait=AsyncMock(return_value=-9),
         )

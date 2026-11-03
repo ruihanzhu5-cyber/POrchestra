@@ -26,7 +26,6 @@ from porchestra.runtime import (
     ToolGateway,
 )
 from porchestra.runtime.runtime import SpawnBudgetPolicy
-
 from porchestra.runtime.types import (
     CheckResult,
     HealthDecision,
@@ -40,13 +39,20 @@ from porchestra.runtime.types import (
 
 
 def helper_plan(node, count=2, budget=None):
-    return tuple(replace(node.contract,
-        objective=("Investigate" if i == 0 else "Implement") + f" component {i}",
-        contract_id=uuid4().hex, parent_contract_id=node.contract.contract_id,
-        scope=(f"component_{i}",),
-        acceptance_checks=(AcceptanceCheck(f"component_{i}", f"pytest component_{i}"),),
-        budget_limit=budget or node.contract.budget_limit // 4)
-        for i in range(count))
+    return tuple(
+        replace(
+            node.contract,
+            objective=("Investigate" if i == 0 else "Implement") + f" component {i}",
+            contract_id=uuid4().hex,
+            parent_contract_id=node.contract.contract_id,
+            scope=(f"component_{i}",),
+            acceptance_checks=(
+                AcceptanceCheck(f"component_{i}", f"pytest component_{i}"),
+            ),
+            budget_limit=budget or node.contract.budget_limit // 4,
+        )
+        for i in range(count)
+    )
 
 
 class MockSpawnBudgetPolicy(SpawnBudgetPolicy):
@@ -151,7 +157,9 @@ class MockAgentDriver:
         if node.depth == 0 and not self.messages:
             if self.steps < 5:
                 return StepOutcome("continue", tokens_used=10)
-            return StepOutcome("spawn", child_contracts=helper_plan(node), tokens_used=10)
+            return StepOutcome(
+                "spawn", child_contracts=helper_plan(node), tokens_used=10
+            )
         if node.depth > 0:
             if self.hang_children:
                 await asyncio.Event().wait()
@@ -297,7 +305,9 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_recursive_delegation_with_one_execution_slot(self):
         class RecursiveDriver(MockAgentDriver):
             async def step(self, node):
-                if node.depth < 2 and not any(message.startswith("[") for message in self.messages):
+                if node.depth < 2 and not any(
+                    message.startswith("[") for message in self.messages
+                ):
                     children = helper_plan(node)
                     return StepOutcome("spawn", child_contracts=children, tokens_used=1)
                 if node.depth == 2:
@@ -319,25 +329,35 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
                     return StepOutcome("continue", tokens_used=800)
                 self.backend.files[node.workspace_id]["fix.py"] = "fixed"
                 return StepOutcome("finish", tokens_used=1)
+
         runtime = self.build(factory=lambda node: TokenDriver(self.backend))
-        result = await runtime.run(self.root,workspace_id="root")
-        self.assertEqual(result.outcome,"verified")
-        self.assertEqual(len(runtime.registry.results),1)
-        self.assertEqual(runtime.budget.used_by_node[self.root.contract_id],801)
-        self.assertTrue(any("token_budget:800/1000" in message for message in self.drivers[self.root.contract_id].messages))
+        result = await runtime.run(self.root, workspace_id="root")
+        self.assertEqual(result.outcome, "verified")
+        self.assertEqual(len(runtime.registry.results), 1)
+        self.assertEqual(runtime.budget.used_by_node[self.root.contract_id], 801)
+        self.assertTrue(
+            any(
+                "token_budget:800/1000" in message
+                for message in self.drivers[self.root.contract_id].messages
+            )
+        )
 
     async def test_depth_cap_rejects_helpers_and_requester_continues(self):
         class Requester(MockAgentDriver):
-            async def step(self,node):
+            async def step(self, node):
                 if not self.messages:
-                    return StepOutcome("spawn",child_contracts=helper_plan(node))
-                self.backend.files[node.workspace_id]["fix.py"]="fixed"
-                return StepOutcome("finish",tokens_used=1)
-        runtime=self.build(factory=lambda node: Requester(self.backend), limits=RuntimeLimits(max_depth=0))
-        result=await runtime.run(self.root,workspace_id="root")
-        self.assertEqual(result.outcome,"verified")
-        self.assertEqual(len(runtime.registry.results),1)
-        self.assertIn("SPLIT_REJECTED",[r["event"] for r in self.records()])
+                    return StepOutcome("spawn", child_contracts=helper_plan(node))
+                self.backend.files[node.workspace_id]["fix.py"] = "fixed"
+                return StepOutcome("finish", tokens_used=1)
+
+        runtime = self.build(
+            factory=lambda node: Requester(self.backend),
+            limits=RuntimeLimits(max_depth=0),
+        )
+        result = await runtime.run(self.root, workspace_id="root")
+        self.assertEqual(result.outcome, "verified")
+        self.assertEqual(len(runtime.registry.results), 1)
+        self.assertIn("SPLIT_REJECTED", [r["event"] for r in self.records()])
 
     async def test_child_timeout_does_not_deadlock_waiting_parent(self):
         runtime = self.build(
@@ -530,8 +550,10 @@ class HealthAndBudgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ledger.reserved_by_node["root"], 0)
 
     async def test_default_split_declines_without_explicit_complementary_duties(self):
-        duties=await ContractGenerator().split(self.node(), HealthDecision(True,"stagnation",5,0.5),available_budget=20)
-        self.assertEqual(duties,())
+        duties = await ContractGenerator().split(
+            self.node(), HealthDecision(True, "stagnation", 5, 0.5), available_budget=20
+        )
+        self.assertEqual(duties, ())
 
 
 if __name__ == "__main__":

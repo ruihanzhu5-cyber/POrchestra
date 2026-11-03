@@ -223,7 +223,12 @@ class MiniSWESubAgent(BaseAgent):
                 "_parse_error": "invalid_native_tool_json",
             }
         if name != "bash" and isinstance(arguments, dict):
-            return {"action":name, "params":arguments, "reasoning":content, "_native_tool_call":True}
+            return {
+                "action": name,
+                "params": arguments,
+                "reasoning": content,
+                "_native_tool_call": True,
+            }
         command = arguments.get("command") if isinstance(arguments, dict) else None
         if not isinstance(command, str) or not command.strip():
             return {
@@ -292,7 +297,10 @@ class MiniSWESubAgent(BaseAgent):
                 "content": (
                     "MainAgent revised the active execution contract. Preserve the "
                     "current /testbed workspace and continue from the existing state.\n\n"
-                    + (revision_context or "No additional revision details were provided.")
+                    + (
+                        revision_context
+                        or "No additional revision details were provided."
+                    )
                     + f"\n\nCurrent assigned subtask:\n{task_instruction}"
                 ),
             }
@@ -343,7 +351,9 @@ class MiniSWESubAgent(BaseAgent):
 
     def _bounded_observation(self, observation: Any) -> str:
         if isinstance(observation, dict):
-            value = observation.get("output") or observation.get("message") or observation
+            value = (
+                observation.get("output") or observation.get("message") or observation
+            )
         else:
             value = observation
         return truncate_text(value, self.max_observation_chars)

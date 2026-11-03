@@ -9,12 +9,13 @@ import json
 import sys
 import threading
 from collections import OrderedDict, deque
+from collections.abc import AsyncIterator, Awaitable, Callable
 from concurrent.futures import Future as ThreadFuture
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Awaitable, Callable, ClassVar, Literal
+from typing import Any, ClassVar, Literal
 
-from .types import VerifiedFact, VerificationReport, WorkspaceSnapshot
+from .types import VerificationReport, VerifiedFact, WorkspaceSnapshot
 
 
 @dataclass(frozen=True)
@@ -360,7 +361,13 @@ _READ_TOOLS = frozenset(
     }
 )
 _DYNAMIC_READS = frozenset(
-    {"get_time", "current_time", "get_notifications", "list_notifications", "read_artifact"}
+    {
+        "get_time",
+        "current_time",
+        "get_notifications",
+        "list_notifications",
+        "read_artifact",
+    }
 )
 
 
@@ -439,13 +446,30 @@ class ToolGateway:
                 if request.force_refresh:
                     self.board.invalidate(namespace)
                 generation = self.board.generation(namespace)
-                payload = [request.run_id, namespace, revision, request.tool_name, request.args, generation]
-                key = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+                payload = [
+                    request.run_id,
+                    namespace,
+                    revision,
+                    request.tool_name,
+                    request.args,
+                    generation,
+                ]
+                key = hashlib.sha256(
+                    json.dumps(payload, sort_keys=True).encode()
+                ).hexdigest()
+
                 async def immutable_read():
                     value = await call()
-                    return CacheEntry(namespace, generation, value, self._successful(value))
-                entry, hit = await self.board.get_or_compute(key, immutable_read, workspace_id=namespace)
-                return ToolResult(entry.value, cache_hit=hit, annotation="[Cache Hit]" if hit else "")
+                    return CacheEntry(
+                        namespace, generation, value, self._successful(value)
+                    )
+
+                entry, hit = await self.board.get_or_compute(
+                    key, immutable_read, workspace_id=namespace
+                )
+                return ToolResult(
+                    entry.value, cache_hit=hit, annotation="[Cache Hit]" if hit else ""
+                )
 
         if mode == "write":
             async with gate.hold(write=True):

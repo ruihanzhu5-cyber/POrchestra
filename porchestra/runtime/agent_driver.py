@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import json
 import logging
-import hashlib
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Any, Protocol
 
 from .contracts import ContractGenerator
 from .memory import ToolGateway, ToolRequest
@@ -203,9 +204,16 @@ class POrchestraAgentDriver:
                 reader = getattr(self.gateway, "artifact_reader", None)
                 if reader is None:
                     raise PermissionError("No artifact reader configured")
+
                 async def read_artifact():
                     return await reader.read_artifact(**params)
-                prepared = PreparedTool(ToolRequest(node.run_id, node.node_id, node.workspace_id, name, params), read_artifact)
+
+                prepared = PreparedTool(
+                    ToolRequest(
+                        node.run_id, node.node_id, node.workspace_id, name, params
+                    ),
+                    read_artifact,
+                )
             else:
                 prepared = self.binding.prepare(node, action)
             result = await self.gateway.execute(prepared.request, prepared.call)
@@ -337,9 +345,9 @@ def create_legacy_session(
 ) -> Any:
     """Lazy imports keep CLI planning and Mock tests independent of model clients."""
     from base.engine.async_llm import LLMsConfig, create_llm_instance
-    from porchestra.subagent import ReActSubAgent
     from porchestra.mini_swe_subagent import MiniSWESubAgent
     from porchestra.prompts.swebench_subagent import parse_swebench_subagent_response
+    from porchestra.subagent import ReActSubAgent
 
     if backend not in {"react", "mini"}:
         raise ValueError("Unknown session backend")

@@ -143,11 +143,14 @@ async def worker(args):
 
     class GuardedPilotRunner(SWEBenchRuntimeRunner):
         async def _prepare(self, env, directory):
-            from porchestra.runtime.benchmark_bindings import SnapshotCheckRunner
-            from porchestra.runtime.benchmark_bindings import BoundSWEExecutor
-            from porchestra.runtime import GlobalMemoryBoard, ToolGateway
-            from porchestra.runtime.memory import ToolRequest
             import time
+
+            from porchestra.runtime import GlobalMemoryBoard, ToolGateway
+            from porchestra.runtime.benchmark_bindings import (
+                BoundSWEExecutor,
+                SnapshotCheckRunner,
+            )
+            from porchestra.runtime.memory import ToolRequest
 
             prepared = await super()._prepare(env, directory)
             gateway = ToolGateway(GlobalMemoryBoard.instance())

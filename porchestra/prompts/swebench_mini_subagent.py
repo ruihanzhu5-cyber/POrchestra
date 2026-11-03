@@ -6,7 +6,6 @@ from typing import Any
 
 from porchestra.prompts.swebench_subagent import SWE_REVISE_EXAMPLE, SWE_SAE_SCHEMA
 
-
 MINI_SWE_SYSTEM_PROMPT = """You are a POrchestra SubAgent responsible for a local software-engineering task.
 Your goal is to complete the GitHub issue subtask assigned by MainAgent.
 
@@ -187,15 +186,59 @@ def build_mini_swe_bash_tool(workspace_path: str = "/testbed") -> list[dict[str,
 
 def build_runtime_read_tools():
     tools = []
-    for name, description in (("read_file", "Read a repository file; prefer this cached tool over bash cat."), ("read_range", "Read a numbered line range; prefer this over bash sed."), ("search", "Search literal text in versioned repository content; prefer this over bash grep.")):
-        properties = {"path": {"type":"string", "description":"Repository-relative path; use . for repository-wide search."}}
+    for name, description in (
+        ("read_file", "Read a repository file; prefer this cached tool over bash cat."),
+        ("read_range", "Read a numbered line range; prefer this over bash sed."),
+        (
+            "search",
+            "Search literal text in versioned repository content; prefer this over bash grep.",
+        ),
+    ):
+        properties = {
+            "path": {
+                "type": "string",
+                "description": "Repository-relative path; use . for repository-wide search.",
+            }
+        }
         required = ["path"]
         if name == "read_range":
-            properties.update(start={"type":"integer"}, end={"type":"integer"}); required += ["start", "end"]
+            properties.update(start={"type": "integer"}, end={"type": "integer"})
+            required += ["start", "end"]
         if name == "search":
-            properties["query"] = {"type":"string"}; required += ["query"]
-        tools.append({"type":"function", "function":{"name":name,"description":description,"parameters":{"type":"object","properties":properties,"required":required}}})
-    tools.append({"type":"function", "function":{"name":"read_artifact","description":"Read a supplied result/patch reference; candidate_unverified content is not trusted code.","parameters":{"type":"object","properties":{"ref":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"}},"required":["ref"]}}})
+            properties["query"] = {"type": "string"}
+            required += ["query"]
+        tools.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": description,
+                    "parameters": {
+                        "type": "object",
+                        "properties": properties,
+                        "required": required,
+                    },
+                },
+            }
+        )
+    tools.append(
+        {
+            "type": "function",
+            "function": {
+                "name": "read_artifact",
+                "description": "Read a supplied result/patch reference; candidate_unverified content is not trusted code.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "ref": {"type": "string"},
+                        "offset": {"type": "integer"},
+                        "limit": {"type": "integer"},
+                    },
+                    "required": ["ref"],
+                },
+            },
+        }
+    )
     return tools
 
 

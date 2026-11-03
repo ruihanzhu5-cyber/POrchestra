@@ -7,12 +7,13 @@ import json
 import math
 import threading
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from .contracts import ContractGenerator, ContractVerifier
-from .health import HealthMonitor
 from .handoff import summarize
+from .health import HealthMonitor
 from .lifecycle import EventSink, StateMerger
 from .memory import ToolGateway
 from .types import (
@@ -629,10 +630,20 @@ class NodeRuntime:
                     node.last_diff_fingerprint = await self.workspaces.diff_fingerprint(
                         workspace
                     )
-                    node.handoff = {**handoff, "changes": {**handoff["changes"], "state": "inherited_from_parent"}}
+                    node.handoff = {
+                        **handoff,
+                        "changes": {
+                            **handoff["changes"],
+                            "state": "inherited_from_parent",
+                        },
+                    }
                     driver = self._driver_factory(node, self.gateway)
                     prepared.append((node, driver))
-                    await driver.inject_context(node.node_id, "PARENT_HANDOFF " + json.dumps(node.handoff, ensure_ascii=False))
+                    await driver.inject_context(
+                        node.node_id,
+                        "PARENT_HANDOFF "
+                        + json.dumps(node.handoff, ensure_ascii=False),
+                    )
                 for node, driver in prepared:
                     self.registry.register(node)
                     self._drivers[node.node_id] = driver
@@ -678,7 +689,9 @@ class NodeRuntime:
 
     async def _build_handoff(self, node):
         describe = getattr(self.workspaces, "describe_changes", None)
-        summary = await describe(node.base_snapshot, node.workspace_id) if describe else ""
+        summary = (
+            await describe(node.base_snapshot, node.workspace_id) if describe else ""
+        )
         return summarize(node, change_summary=summary)
 
     async def request_finish(self, node_id: str) -> VerificationReport:
@@ -752,10 +765,16 @@ class NodeRuntime:
             for result in results:
                 merge = None
                 child_contract = self.registry.get(result.node_id).contract
-                independent = result.outcome == "verified" and child_contract.independent
+                independent = (
+                    result.outcome == "verified" and child_contract.independent
+                )
                 if all_passed or independent:
                     merge = await self._bounded(
-                        self.merger.merge(parent, result, scope=child_contract.scope if independent else None),
+                        self.merger.merge(
+                            parent,
+                            result,
+                            scope=child_contract.scope if independent else None,
+                        ),
                         self.limits.cleanup_timeout_seconds,
                     )
                 messages.append(

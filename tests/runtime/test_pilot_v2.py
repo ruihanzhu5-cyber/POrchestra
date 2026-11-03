@@ -1,15 +1,15 @@
-import time
-import tempfile
+import os
 import subprocess
 import sys
-import os
-from pathlib import Path
+import tempfile
+import time
 import unittest
 from dataclasses import replace
-from porchestra.runtime.contracts import ContractGenerator
-from porchestra.runtime.runtime import BudgetLedger, SpawnBudgetPolicy
+from pathlib import Path
 
+from porchestra.runtime.contracts import ContractGenerator
 from porchestra.runtime.health import HealthMonitor
+from porchestra.runtime.runtime import BudgetLedger, SpawnBudgetPolicy
 from porchestra.runtime.types import (
     AcceptanceCheck,
     NodeRecord,
@@ -153,7 +153,8 @@ class SpawnBudgetTests(unittest.IsolatedAsyncioTestCase):
 
 class RecoverableSpawnTests(unittest.IsolatedAsyncioTestCase):
     async def test_depth_and_node_caps_keep_requester_alive(self):
-        from test_runtime import RuntimeTests, MockAgentDriver
+        from test_runtime import MockAgentDriver, RuntimeTests
+
         from porchestra.runtime.runtime import RuntimeLimits
         from porchestra.runtime.types import StepOutcome
 
@@ -240,7 +241,7 @@ class ImportIsolationTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(marker.exists())
 
     async def test_pytest_check_uses_supported_config_and_executes(self):
-        from scripts.pilot_runtime_swe import PUBLIC_CHECKS, PILOT_IDS
+        from scripts.pilot_runtime_swe import PILOT_IDS, PUBLIC_CHECKS
 
         script = PUBLIC_CHECKS[PILOT_IDS[1]]
         self.assertIn("from _pytest.config import Config", script)
@@ -255,30 +256,62 @@ class ImportIsolationTests(unittest.IsolatedAsyncioTestCase):
 
 class HandoffTests(unittest.IsolatedAsyncioTestCase):
     async def test_spawn_handoff_has_reads_changes_checks_and_next_step(self):
-        from test_runtime import RuntimeTests, MockAgentDriver
+        from test_runtime import MockAgentDriver, RuntimeTests
+
         from porchestra.runtime.runtime import BudgetLedger
         from porchestra.runtime.types import StepOutcome
+
         fixture = RuntimeTests()
         await fixture.asyncSetUp()
         self.addCleanup(fixture.doCleanups)
+
         class Requester(MockAgentDriver):
             async def step(self, record):
                 self.steps += 1
                 if record.depth == 0 and self.steps == 1:
-                    helper = replace(record.contract, objective="repair helper", contract_id="helper", parent_contract_id=record.contract.contract_id, scope=("fix.py",), budget_limit=30000)
-                    return StepOutcome("spawn", child_contracts=(helper,), progress={"tool":"read_range", "arguments":{"path":"fix.py", "start":1, "end":20}})
+                    helper = replace(
+                        record.contract,
+                        objective="repair helper",
+                        contract_id="helper",
+                        parent_contract_id=record.contract.contract_id,
+                        scope=("fix.py",),
+                        budget_limit=30000,
+                    )
+                    return StepOutcome(
+                        "spawn",
+                        child_contracts=(helper,),
+                        progress={
+                            "tool": "read_range",
+                            "arguments": {"path": "fix.py", "start": 1, "end": 20},
+                        },
+                    )
                 if record.depth > 0:
                     self.backend.files[record.workspace_id]["fix.py"] = "fixed"
                 return StepOutcome("finish", tokens_used=1)
+
         runtime = fixture.build(factory=lambda record: Requester(fixture.backend))
         fixture.root = replace(fixture.root, budget_limit=100000)
         runtime.budget = BudgetLedger(100000)
         result = await runtime.run(fixture.root, workspace_id="root")
         self.assertEqual(result.outcome, "verified")
-        msg = next(m for m in fixture.drivers["helper"].messages if m.startswith("PARENT_HANDOFF"))
+        msg = next(
+            m
+            for m in fixture.drivers["helper"].messages
+            if m.startswith("PARENT_HANDOFF")
+        )
         import json
+
         data = json.loads(msg.partition(" ")[2])
-        self.assertEqual(set(data), {"read_locations","changes","checks_run","unresolved_issues","next_steps"})
+        self.assertEqual(
+            set(data),
+            {
+                "read_locations",
+                "changes",
+                "checks_run",
+                "unresolved_issues",
+                "next_steps",
+            },
+        )
         self.assertEqual(data["read_locations"][0]["arguments"]["path"], "fix.py")
         self.assertEqual(data["changes"]["state"], "inherited_from_parent")
 
@@ -286,84 +319,219 @@ class HandoffTests(unittest.IsolatedAsyncioTestCase):
 class StructuredCacheTests(unittest.IsolatedAsyncioTestCase):
     async def test_real_binding_shares_snapshot_reads_and_invalidates_after_edit(self):
         from types import SimpleNamespace
+
         from porchestra.runtime.benchmark_bindings import SWEToolBinding
         from porchestra.runtime.git_workspace import GitWorkspaceBackend
-        from porchestra.runtime.memory import ToolGateway, GlobalMemoryBoard, ToolRequest
+        from porchestra.runtime.memory import (
+            GlobalMemoryBoard,
+            ToolGateway,
+            ToolRequest,
+        )
+
         with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)/"repo"; root.mkdir()
-            for args in (("init",), ("config","user.name","test"),("config","user.email","test@local")):
-                subprocess.run(["git","-C",str(root),*args],check=True,capture_output=True)
-            (root/"a.py").write_text("original\n")
-            subprocess.run(["git","-C",str(root),"add","."],check=True,capture_output=True)
-            subprocess.run(["git","-C",str(root),"commit","-m","base"],check=True,capture_output=True)
-            backend = GitWorkspaceBackend(str(Path(temp)/"artifacts"))
+            root = Path(temp) / "repo"
+            root.mkdir()
+            for args in (
+                ("init",),
+                ("config", "user.name", "test"),
+                ("config", "user.email", "test@local"),
+            ):
+                subprocess.run(
+                    ["git", "-C", str(root), *args], check=True, capture_output=True
+                )
+            (root / "a.py").write_text("original\n")
+            subprocess.run(
+                ["git", "-C", str(root), "add", "."], check=True, capture_output=True
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "commit", "-m", "base"],
+                check=True,
+                capture_output=True,
+            )
+            backend = GitWorkspaceBackend(str(Path(temp) / "artifacts"))
             base = await backend.snapshot(str(root))
-            fork = await backend.fork(base,node_id="child")
-            n = replace(node(), workspace_id=str(root), contract=replace(node().contract,allowed_tools=("aci_command",)))
-            child = replace(n,node_id="child",workspace_id=fork)
+            fork = await backend.fork(base, node_id="child")
+            n = replace(
+                node(),
+                workspace_id=str(root),
+                contract=replace(node().contract, allowed_tools=("aci_command",)),
+            )
+            child = replace(n, node_id="child", workspace_id=fork)
             calls = 0
             original_git = backend._git
-            async def counted(*args,**kwargs):
+
+            async def counted(*args, **kwargs):
                 nonlocal calls
-                if len(args)>1 and args[1]=="show": calls += 1
-                return await original_git(*args,**kwargs)
+                if len(args) > 1 and args[1] == "show":
+                    calls += 1
+                return await original_git(*args, **kwargs)
+
             backend._git = counted
             gateway = ToolGateway(GlobalMemoryBoard.instance())
+
             async def read(record):
-                manager=SimpleNamespace(executor=SimpleNamespace(workspaces=backend))
-                prepared=SWEToolBinding(manager).prepare(record,{"action":"read_file","params":{"path":"a.py"}})
-                return await gateway.execute(prepared.request,prepared.call)
-            first=await read(n); second=await read(child)
-            self.assertFalse(first.cache_hit);self.assertTrue(second.cache_hit);self.assertEqual(calls,1)
+                manager = SimpleNamespace(executor=SimpleNamespace(workspaces=backend))
+                prepared = SWEToolBinding(manager).prepare(
+                    record, {"action": "read_file", "params": {"path": "a.py"}}
+                )
+                return await gateway.execute(prepared.request, prepared.call)
+
+            first = await read(n)
+            second = await read(child)
+            self.assertFalse(first.cache_hit)
+            self.assertTrue(second.cache_hit)
+            self.assertEqual(calls, 1)
+
             async def edit():
-                (root/"a.py").write_text("changed\n")
-                return {"exit_code":0}
-            await gateway.execute(ToolRequest(n.run_id,n.node_id,n.workspace_id,"write"),edit)
-            changed=await read(n)
-            self.assertFalse(changed.cache_hit);self.assertEqual(changed.value["output"],"changed\n")
-            unchanged=await read(child)
-            self.assertTrue(unchanged.cache_hit);self.assertEqual(unchanged.value["output"],"original\n")
-            prepared=SWEToolBinding(SimpleNamespace(executor=SimpleNamespace(workspaces=backend))).prepare(n,{"action":"read_range","params":{"path":"a.py","start":1,"end":1}})
-            ranged=await gateway.execute(prepared.request,prepared.call)
-            self.assertEqual(ranged.value["output"],"1: changed")
+                (root / "a.py").write_text("changed\n")
+                return {"exit_code": 0}
+
+            await gateway.execute(
+                ToolRequest(n.run_id, n.node_id, n.workspace_id, "write"), edit
+            )
+            changed = await read(n)
+            self.assertFalse(changed.cache_hit)
+            self.assertEqual(changed.value["output"], "changed\n")
+            unchanged = await read(child)
+            self.assertTrue(unchanged.cache_hit)
+            self.assertEqual(unchanged.value["output"], "original\n")
+            prepared = SWEToolBinding(
+                SimpleNamespace(executor=SimpleNamespace(workspaces=backend))
+            ).prepare(
+                n,
+                {
+                    "action": "read_range",
+                    "params": {"path": "a.py", "start": 1, "end": 1},
+                },
+            )
+            ranged = await gateway.execute(prepared.request, prepared.call)
+            self.assertEqual(ranged.value["output"], "1: changed")
             with self.assertRaises(ValueError):
-                SWEToolBinding(SimpleNamespace()).prepare(n,{"action":"read_file","params":{"path":"../outside"}})
+                SWEToolBinding(SimpleNamespace()).prepare(
+                    n, {"action": "read_file", "params": {"path": "../outside"}}
+                )
 
 
 class PartialMergeTests(unittest.IsolatedAsyncioTestCase):
     async def test_independent_verified_child_merges_despite_failed_sibling(self):
-        from test_runtime import RuntimeTests, MockAgentDriver
+        from test_runtime import MockAgentDriver, RuntimeTests
+
         from porchestra.runtime.runtime import BudgetLedger
         from porchestra.runtime.types import StepOutcome
-        fixture = RuntimeTests(); await fixture.asyncSetUp(); self.addCleanup(fixture.doCleanups)
+
+        fixture = RuntimeTests()
+        await fixture.asyncSetUp()
+        self.addCleanup(fixture.doCleanups)
+
         async def paths(diff):
-            base=fixture.backend.snapshots[diff.base.artifact_ref]; tip=fixture.backend.snapshots[diff.tip.artifact_ref]
-            return tuple(k for k in set(base)|set(tip) if base.get(k)!=tip.get(k))
+            base = fixture.backend.snapshots[diff.base.artifact_ref]
+            tip = fixture.backend.snapshots[diff.tip.artifact_ref]
+            return tuple(k for k in set(base) | set(tip) if base.get(k) != tip.get(k))
+
         fixture.backend.changed_paths = paths
+
         class Requester(MockAgentDriver):
             async def step(self, record):
                 self.steps += 1
                 if record.depth == 0 and self.steps == 1:
-                    a=replace(record.contract,objective="repair component A",contract_id="a",parent_contract_id=record.contract.contract_id,scope=("fix.py",),independent=True,budget_limit=25000)
-                    b=replace(a,objective="repair component B",contract_id="b",scope=("other.py",),acceptance_checks=(AcceptanceCheck("b", "pytest other.py"),))
-                    return StepOutcome("spawn",child_contracts=(a,b))
-                if record.node_id == "b": return StepOutcome("stop",reason="cannot repair sibling")
-                if record.depth > 0:self.backend.files[record.workspace_id]["fix.py"]="fixed"
-                return StepOutcome("finish",tokens_used=1)
-        runtime=fixture.build(factory=lambda record: Requester(fixture.backend))
-        fixture.root=replace(fixture.root,budget_limit=100000);runtime.budget=BudgetLedger(100000)
-        result=await runtime.run(fixture.root,workspace_id="root")
-        self.assertEqual(result.outcome,"verified")
-        self.assertEqual(runtime.registry.results["b"].outcome,"failed")
-        self.assertEqual(fixture.backend.files["root"]["fix.py"],"fixed")
-        self.assertEqual(sum(e["event"]=="MERGE_COMMIT" for e in fixture.records()),1)
+                    a = replace(
+                        record.contract,
+                        objective="repair component A",
+                        contract_id="a",
+                        parent_contract_id=record.contract.contract_id,
+                        scope=("fix.py",),
+                        independent=True,
+                        budget_limit=25000,
+                    )
+                    b = replace(
+                        a,
+                        objective="repair component B",
+                        contract_id="b",
+                        scope=("other.py",),
+                        acceptance_checks=(AcceptanceCheck("b", "pytest other.py"),),
+                    )
+                    return StepOutcome("spawn", child_contracts=(a, b))
+                if record.node_id == "b":
+                    return StepOutcome("stop", reason="cannot repair sibling")
+                if record.depth > 0:
+                    self.backend.files[record.workspace_id]["fix.py"] = "fixed"
+                return StepOutcome("finish", tokens_used=1)
+
+        runtime = fixture.build(factory=lambda record: Requester(fixture.backend))
+        fixture.root = replace(fixture.root, budget_limit=100000)
+        runtime.budget = BudgetLedger(100000)
+        result = await runtime.run(fixture.root, workspace_id="root")
+        self.assertEqual(result.outcome, "verified")
+        self.assertEqual(runtime.registry.results["b"].outcome, "failed")
+        self.assertEqual(fixture.backend.files["root"]["fix.py"], "fixed")
+        self.assertEqual(
+            sum(e["event"] == "MERGE_COMMIT" for e in fixture.records()), 1
+        )
 
     async def test_candidate_artifact_is_readable_without_becoming_trusted(self):
         from porchestra.runtime.lifecycle import ArtifactReader
+
         with tempfile.TemporaryDirectory() as temp:
-            root=Path(temp); artifact=root/"candidate.patch";artifact.write_text("unverified change")
-            reader=ArtifactReader((root,));reader.register(str(artifact),trusted=False)
-            result=await reader.read_artifact(str(artifact))
-            self.assertEqual(result["trust"],"candidate_unverified")
-            self.assertEqual(result["output"],"unverified change")
-            with self.assertRaises(PermissionError):await reader.read_artifact(str(root.parent/"escape"))
+            root = Path(temp)
+            artifact = root / "candidate.patch"
+            artifact.write_text("unverified change")
+            reader = ArtifactReader((root,))
+            reader.register(str(artifact), trusted=False)
+            result = await reader.read_artifact(str(artifact))
+            self.assertEqual(result["trust"], "candidate_unverified")
+            self.assertEqual(result["output"], "unverified change")
+            with self.assertRaises(PermissionError):
+                await reader.read_artifact(str(root.parent / "escape"))
+
+
+class CheckExitTests(unittest.IsolatedAsyncioTestCase):
+    async def test_shell_pipeline_cannot_hide_failed_check(self):
+        from porchestra.runtime.benchmark_bindings import SnapshotCheckRunner
+
+        with tempfile.TemporaryDirectory() as temp:
+
+            class Workspaces:
+                async def fork(self, *args, **kwargs):
+                    return temp
+
+                async def release(self, *args):
+                    pass
+
+            runner = SnapshotCheckRunner(Workspaces())
+            result = await runner.run(
+                AcceptanceCheck("exit", "false | tail -n 1"),
+                None,
+                deadline_monotonic=time.monotonic() + 10,
+            )
+            self.assertNotEqual(result.exit_code, 0)
+
+    async def test_framework_failure_stops_without_business_repair_feedback(self):
+        from test_runtime import RuntimeTests, MockAgentDriver
+        from porchestra.runtime.types import CheckResult, StepOutcome
+
+        fixture = RuntimeTests()
+        await fixture.asyncSetUp()
+        self.addCleanup(fixture.doCleanups)
+
+        class Requester(MockAgentDriver):
+            async def step(self, record):
+                self.steps += 1
+                return StepOutcome("finish", tokens_used=1)
+
+        class BadFramework:
+            async def run(self, check, snapshot, **kwargs):
+                return CheckResult(
+                    check.check_id,
+                    1,
+                    False,
+                    stderr="wrong module origin",
+                    category="framework_check",
+                )
+
+        runtime = fixture.build(factory=lambda record: Requester(fixture.backend))
+        runtime.verifier.runner = BadFramework()
+        result = await runtime.run(fixture.root, workspace_id="root")
+        self.assertEqual(result.outcome, "failed")
+        self.assertIn("framework_check", result.reason)
+        self.assertEqual(fixture.drivers[fixture.root.contract_id].steps, 1)
+        self.assertEqual(fixture.drivers[fixture.root.contract_id].messages, [])
