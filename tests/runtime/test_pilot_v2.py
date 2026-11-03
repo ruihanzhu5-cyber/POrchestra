@@ -626,3 +626,28 @@ class RuntimeSupportTests(unittest.IsolatedAsyncioTestCase):
                     ["git", "-C", str(root), "ls-files"], text=True
                 ),
             )
+
+
+class AdditionalPilotSelectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_worker_cannot_escape_fixed_selected_set(self):
+        from types import SimpleNamespace
+        from scripts.pilot_runtime_swe import worker
+
+        with self.assertRaisesRegex(ValueError, "escaped"):
+            await worker(
+                SimpleNamespace(
+                    worker="pytest-dev__pytest-11143",
+                    pilot_set="baseline-failures-extra3",
+                )
+            )
+
+    async def test_public_reproductions_compile_and_sets_do_not_overlap(self):
+        from scripts.pilot_runtime_swe import PILOT_SETS, PUBLIC_CHECKS, IMPORT_MODULES
+
+        self.assertEqual(len(PILOT_SETS["baseline-failures-extra3"]), 3)
+        self.assertEqual(len(PILOT_SETS["baseline-success-control"]), 1)
+        groups = list(PILOT_SETS.values())
+        self.assertEqual(len(set(sum(groups, ()))), sum(map(len, groups)))
+        for identity in groups[1] + groups[2]:
+            compile(PUBLIC_CHECKS[identity], identity, "exec")
+            self.assertTrue(IMPORT_MODULES[identity])

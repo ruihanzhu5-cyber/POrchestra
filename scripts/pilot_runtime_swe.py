@@ -70,6 +70,31 @@ print("public regression passed")
 }
 
 
+from scripts.pilot_extra_cases import (
+    FAILURE_IDS,
+    SUCCESS_IDS,
+    IMPORTS as EXTRA_IMPORTS,
+    PUBLIC_CHECKS as EXTRA_CHECKS,
+)
+
+ORIGINAL_IDS = PILOT_IDS
+PILOT_SETS = {
+    "original": ORIGINAL_IDS,
+    "baseline-failures-extra3": FAILURE_IDS,
+    "baseline-success-control": SUCCESS_IDS,
+}
+IMPORT_MODULES = {
+    ORIGINAL_IDS[0]: ("requests",),
+    ORIGINAL_IDS[1]: ("pytest", "_pytest"),
+    ORIGINAL_IDS[2]: ("sympy",),
+    **EXTRA_IMPORTS,
+}
+PUBLIC_CHECKS.update(EXTRA_CHECKS)
+ALL_IDS = tuple(
+    dict.fromkeys(identity for group in PILOT_SETS.values() for identity in group)
+)
+
+
 def parser():
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--run-dir", type=Path, required=True)
@@ -79,13 +104,16 @@ def parser():
     result.add_argument(
         "--secret-file", type=Path, default=Path("/data/secrets/deepseek.json")
     )
-    result.add_argument("--worker", choices=PILOT_IDS)
+    result.add_argument("--pilot-set", choices=tuple(PILOT_SETS), default="original")
+    result.add_argument("--worker", choices=ALL_IDS)
     result.add_argument("--attempt", type=int, default=1)
     result.add_argument("--token-budget", type=int, default=300_000)
     return result
 
 
 async def worker(args):
+    if args.worker not in PILOT_SETS[args.pilot_set]:
+        raise ValueError("Worker escaped the selected explicit Pilot set")
     started = time.monotonic()
     secret = json.loads(args.secret_file.read_text())
     os.environ["DEEPSEEK_API_KEY"] = secret["api_key"]
@@ -139,11 +167,7 @@ async def worker(args):
         command,
         expected_output_pattern="public regression passed",
         timeout_seconds=120,
-        import_modules={
-            PILOT_IDS[0]: ("requests",),
-            PILOT_IDS[1]: ("pytest", "_pytest"),
-            PILOT_IDS[2]: ("sympy",),
-        }[args.worker],
+        import_modules=IMPORT_MODULES[args.worker],
     )
 
     class GuardedPilotRunner(SWEBenchRuntimeRunner):
@@ -289,7 +313,8 @@ def main():
         ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
     ).strip()
     manifest = {
-        "pilot_ids": PILOT_IDS,
+        "pilot_ids": PILOT_SETS[args.pilot_set],
+        "pilot_set": args.pilot_set,
         "revision": revision,
         "case_concurrency": 1,
         "node_concurrency": 2,
@@ -304,7 +329,7 @@ def main():
         history.mkdir(exist_ok=True)
         (history / f"manifest-{uuid4().hex}.json").write_text(manifest_path.read_text())
     manifest_path.write_text(json.dumps(manifest, indent=2))
-    for identity in PILOT_IDS:
+    for identity in PILOT_SETS[args.pilot_set]:
         status = args.run_dir / "status" / (identity + ".json")
         previous = json.loads(status.read_text()) if status.exists() else {}
         if previous.get("scored"):
@@ -339,6 +364,8 @@ def main():
             str(Path(__file__).resolve()),
             "--worker",
             identity,
+            "--pilot-set",
+            args.pilot_set,
             "--run-dir",
             str(args.run_dir),
             "--dataset",
@@ -369,7 +396,15 @@ def main():
                 flush=True,
             )
             return 2
-    print(json.dumps({"event": "PILOT_COMPLETE", "scored_instances": 3}), flush=True)
+    print(
+        json.dumps(
+            {
+                "event": "PILOT_COMPLETE",
+                "scored_instances": len(PILOT_SETS[args.pilot_set]),
+            }
+        ),
+        flush=True,
+    )
     return 0
 
 
