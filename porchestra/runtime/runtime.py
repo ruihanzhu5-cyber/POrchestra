@@ -697,6 +697,12 @@ class NodeRuntime:
             await self.complete(node_id, report)
         else:
             await self.events.record("VERIFY_REJECT", node, report.error_log)
+            if any(not c.passed for c in report.framework_checks):
+                await self.terminate(
+                    node_id,
+                    reason="framework_check: " + self.verifier.format_feedback(report),
+                )
+                return
             await self._drivers[node_id].inject_context(
                 node_id, self.verifier.format_feedback(report)
             )

@@ -58,6 +58,12 @@ def _validate(contract: TaskContract, parent: TaskContract | None = None) -> Non
         seen.add(check.check_id)
         if not isinstance(check.command, str) or not check.command.strip():
             raise ValueError(f"{check.check_id}: command must be non-empty")
+        if not isinstance(check.import_modules, (tuple, list)) or any(
+            not isinstance(m, str)
+            or not re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*", m)
+            for m in check.import_modules
+        ):
+            raise ValueError("import_modules must contain module names")
         if type(check.expected_exit_code) is not int:
             raise ValueError(f"{check.check_id}: expected_exit_code must be an integer")
         if not _positive_number(check.timeout_seconds):
@@ -316,6 +322,7 @@ class ContractVerifier:
         contract = node.contract
         snapshot = node.base_snapshot
         results: list[CheckResult] = []
+        framework_checks: list[CheckResult] = []
         errors: list[str] = []
         try:
             self.validate_contract(contract)
@@ -360,6 +367,18 @@ class ContractVerifier:
                         raise ValueError(
                             "CheckRunner returned invalid exit code or output types"
                         )
+                    if raw.framework_output:
+                        framework_checks.append(
+                            CheckResult(
+                                check.check_id + ":imports",
+                                0,
+                                True,
+                                stdout=raw.framework_output,
+                                category="framework_check",
+                            )
+                        )
+                    if raw.category == "framework_check":
+                        framework_checks.append(raw)
                     matches = (
                         check.expected_output_pattern is None
                         or re.search(
@@ -370,7 +389,8 @@ class ContractVerifier:
                         is not None
                     )
                     passed = (
-                        raw.passed is True
+                        raw.category == "task_check"
+                        and raw.passed is True
                         and not raw.timed_out
                         and (raw.exit_code == check.expected_exit_code and matches)
                     )
@@ -401,6 +421,8 @@ class ContractVerifier:
                 results.append(result)
                 if not result.passed:
                     errors.append(f"{check.check_id} ({check.command}): {reason}")
+                if result.category == "framework_check":
+                    break
             try:
                 remaining = node.deadline_monotonic - time.monotonic()
                 if remaining <= 0:
@@ -430,9 +452,17 @@ class ContractVerifier:
             passed=not errors and bool(results) and all(r.passed for r in results),
             checks=tuple(results),
             error_log="\n".join(errors),
+            framework_checks=tuple(framework_checks),
         )
 
     def format_feedback(self, report: VerificationReport) -> str:
+        if any(not c.passed for c in report.framework_checks):
+            return (
+                "FRAMEWORK CHECK FAILED: do not change business code. Operator must repair verification environment.\n"
+                + "\n".join(
+                    c.stdout + c.stderr for c in report.framework_checks if not c.passed
+                )
+            )
         if report.passed:
             return f"Verification passed: {len(report.checks)} checks on snapshot {report.snapshot.revision}."
         sections = [

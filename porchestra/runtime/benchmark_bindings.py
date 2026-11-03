@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import math
+import os
 import re
 import shlex
 import sys
@@ -74,8 +76,8 @@ class BoundSWEExecutor:
         if re.search(r"(?<![\w])/testbed(?:/|\b)", command):
             return f"Use this node's assigned repository: {self.cwd}", 1
         prefix = (
-            "source /opt/miniconda3/etc/profile.d/conda.sh && conda activate testbed && "
-            f"export PYTHONPATH={shlex.quote(self.cwd)}:${{PYTHONPATH:-}} && "
+            "set -o pipefail; source /opt/miniconda3/etc/profile.d/conda.sh && conda activate testbed && "
+            f"export PYTHONPATH={shlex.quote(self.cwd + '/src')}:{shlex.quote(self.cwd)}:${{PYTHONPATH:-}} && "
         )
         return await self.workspaces.executor.execute_command(
             prefix + command, timeout=timeout, workdir=self.cwd
@@ -221,11 +223,57 @@ class GAIAToolBinding:
         )
 
 
+def import_probe(workspace: str, modules) -> str:
+    return (
+        "import importlib, pathlib, sys\n"
+        f"root = pathlib.Path({workspace!r}).resolve()\n"
+        "sys.path[:0] = [str(root / 'src'), str(root)]\n"
+        f"for name in {tuple(modules)!r}:\n"
+        "    module = importlib.import_module(name)\n"
+        "    source = pathlib.Path(module.__file__).resolve()\n"
+        "    print(f'FRAMEWORK_IMPORT {name}: {source}', flush=True)\n"
+        "    assert source.is_relative_to(root), f'{name} imported outside workspace: {source}'\n"
+    )
+
+
 class SnapshotCheckRunner:
-    """Commands run on a fresh fork, so test artifacts never mutate the source node."""
+    """Pinned task checks run only after their module provenance is verified."""
 
     def __init__(self, workspaces: GitWorkspaceBackend) -> None:
         self.workspaces = workspaces
+
+    async def _execute(self, fork, command, deadline):
+        if isinstance(self.workspaces, MountedSWEWorkspace):
+            output, code = await BoundSWEExecutor(
+                self.workspaces, fork
+            ).execute_command(
+                command, timeout=max(1, math.ceil(deadline - time.monotonic()))
+            )
+            return code, output, ""
+        env = dict(os.environ)
+        env["PYTHONPATH"] = os.pathsep.join(
+            (str(Path(fork) / "src"), str(fork), env.get("PYTHONPATH", ""))
+        )
+        process = await asyncio.create_subprocess_shell(
+            ("set -o pipefail; " + command) if os.name != "nt" else command,
+            **({"executable": "/bin/bash"} if os.name != "nt" else {}),
+            cwd=fork,
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await process.communicate()
+        except BaseException:
+            if process.returncode is None:
+                process.kill()
+            await process.wait()
+            raise
+        return (
+            process.returncode,
+            stdout.decode(errors="replace"),
+            stderr.decode(errors="replace"),
+        )
 
     async def run(self, check, snapshot, *, deadline_monotonic: float) -> CheckResult:
         fork = None
@@ -234,41 +282,53 @@ class SnapshotCheckRunner:
                 fork = await self.workspaces.fork(
                     snapshot, node_id=f"verify-{uuid4().hex}"
                 )
-                if isinstance(self.workspaces, MountedSWEWorkspace):
-                    output, code = await BoundSWEExecutor(
-                        self.workspaces, fork
-                    ).execute_command(
-                        check.command,
-                        timeout=max(
-                            1, math.ceil(deadline_monotonic - time.monotonic())
-                        ),
+                framework_output = ""
+                if check.import_modules:
+                    workspace = (
+                        self.workspaces.container_path(fork)
+                        if isinstance(self.workspaces, MountedSWEWorkspace)
+                        else str(fork)
                     )
-                    return CheckResult(
-                        check.check_id,
-                        code,
-                        code >= 0,
-                        stdout=output,
-                        timed_out=code == -1,
+                    probe = import_probe(workspace, check.import_modules)
+                    encoded = base64.b64encode(probe.encode()).decode()
+                    script = f"import base64; exec(base64.b64decode('{encoded}'))"
+                    python = (
+                        "python"
+                        if isinstance(self.workspaces, MountedSWEWorkspace)
+                        else sys.executable
                     )
-                process = await asyncio.create_subprocess_shell(
-                    check.command,
-                    cwd=fork,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
+                    command = (
+                        f"{python} -c {shlex.quote(script)}"
+                        if os.name != "nt"
+                        or isinstance(self.workspaces, MountedSWEWorkspace)
+                        else __import__("subprocess").list2cmdline(
+                            [python, "-c", script]
+                        )
+                    )
+                    code, stdout, stderr = await self._execute(
+                        fork, command, deadline_monotonic
+                    )
+                    framework_output = stdout + stderr
+                    if code != 0:
+                        return CheckResult(
+                            check.check_id,
+                            code,
+                            False,
+                            stdout,
+                            stderr,
+                            category="framework_check",
+                        )
+                code, stdout, stderr = await self._execute(
+                    fork, check.command, deadline_monotonic
                 )
-                try:
-                    stdout, stderr = await process.communicate()
-                except BaseException:
-                    if process.returncode is None:
-                        process.kill()
-                    await process.wait()
-                    raise
                 return CheckResult(
                     check.check_id,
-                    process.returncode,
-                    True,
-                    stdout.decode(errors="replace"),
-                    stderr.decode(errors="replace"),
+                    code,
+                    code >= 0,
+                    stdout,
+                    stderr,
+                    timed_out=code == -1,
+                    framework_output=framework_output,
                 )
         finally:
             if fork is not None:

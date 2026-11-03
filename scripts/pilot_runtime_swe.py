@@ -43,11 +43,11 @@ print("public regression passed")
     PILOT_IDS[1]: """import os, tempfile
 from unittest.mock import patch
 os.environ["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
-import pytest
+from _pytest.config import Config
 from _pytest.tmpdir import TempPathFactory
 with tempfile.TemporaryDirectory() as directory:
     os.environ["PYTEST_DEBUG_TEMPROOT"] = directory
-    config = pytest.Config.fromdictargs({}, [])
+    config = Config.fromdictargs({}, [])
     try:
         with patch("getpass.getuser", return_value="invalid/user"):
             factory = TempPathFactory.from_config(config)
@@ -134,6 +134,11 @@ async def worker(args):
         command,
         expected_output_pattern="public regression passed",
         timeout_seconds=120,
+        import_modules={
+            PILOT_IDS[0]: ("requests",),
+            PILOT_IDS[1]: ("pytest", "_pytest"),
+            PILOT_IDS[2]: ("sympy",),
+        }[args.worker],
     )
 
     class GuardedPilotRunner(SWEBenchRuntimeRunner):
@@ -197,6 +202,12 @@ async def worker(args):
             if baseline.exit_code == 0:
                 raise RuntimeError(
                     "Public DoD already passes the unmodified baseline; repair acceptance before model calls"
+                )
+            if baseline.category == "framework_check":
+                raise RuntimeError(
+                    "Framework import check failed before task regression: "
+                    + baseline.stdout
+                    + baseline.stderr
                 )
             if any(
                 marker in baseline.stdout + baseline.stderr

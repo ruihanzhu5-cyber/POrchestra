@@ -1,4 +1,9 @@
 import time
+import tempfile
+import subprocess
+import sys
+import os
+from pathlib import Path
 import unittest
 from dataclasses import replace
 from porchestra.runtime.contracts import ContractGenerator
@@ -188,3 +193,61 @@ class RecoverableSpawnTests(unittest.IsolatedAsyncioTestCase):
                     for m in fixture.drivers[fixture.root.contract_id].messages
                 )
             )
+
+
+class ImportIsolationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_src_precedes_installed_module_and_provenance_is_printed(self):
+        from porchestra.runtime.benchmark_bindings import import_probe
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "src").mkdir()
+            (root / "installed").mkdir()
+            (root / "src" / "target_v2.py").write_text("VALUE = 'workspace'")
+            (root / "installed" / "target_v2.py").write_text("VALUE = 'installed'")
+            env = dict(os.environ, PYTHONPATH=str(root / "installed"))
+            run = subprocess.run(
+                [sys.executable, "-c", import_probe(str(root), ("target_v2",))],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(run.returncode, 0, run.stderr)
+            self.assertIn(str(root / "src"), run.stdout)
+
+    async def test_external_import_is_framework_failure_and_task_never_runs(self):
+        from porchestra.runtime.benchmark_bindings import SnapshotCheckRunner
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+
+            class Workspaces:
+                async def fork(self, *args, **kwargs):
+                    return str(root)
+
+                async def release(self, *args):
+                    pass
+
+            marker = root / "task-ran"
+            check = AcceptanceCheck(
+                "imports", f'echo BAD > "{marker}"', import_modules=("json",)
+            )
+            result = await SnapshotCheckRunner(Workspaces()).run(
+                check, None, deadline_monotonic=time.monotonic() + 10
+            )
+            self.assertFalse(result.passed)
+            self.assertEqual(result.category, "framework_check")
+            self.assertFalse(marker.exists())
+
+    async def test_pytest_check_uses_supported_config_and_executes(self):
+        from scripts.pilot_runtime_swe import PUBLIC_CHECKS, PILOT_IDS
+
+        script = PUBLIC_CHECKS[PILOT_IDS[1]]
+        self.assertIn("from _pytest.config import Config", script)
+        self.assertNotIn("pytest.Config", script)
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True
+        )
+        # This assertion can fail for the target regression, but never the removed API.
+        self.assertNotIn("has no attribute 'Config'", result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)

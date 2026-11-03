@@ -22,6 +22,7 @@ class AcceptanceCheck:
     timeout_seconds: float = 120.0
     # None means no output matcher; an empty/zero-test run is not proof by itself.
     expected_output_pattern: str | None = None
+    import_modules: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -70,6 +71,8 @@ class CheckResult:
     stdout: str = ""
     stderr: str = ""
     timed_out: bool = False
+    category: Literal["framework_check", "task_check"] = "task_check"
+    framework_output: str = ""
 
 
 @dataclass(frozen=True)
@@ -82,6 +85,7 @@ class VerificationReport:
     passed: bool
     checks: tuple[CheckResult, ...]
     error_log: str = ""
+    framework_checks: tuple[CheckResult, ...] = ()
 
 
 @dataclass(frozen=True)
