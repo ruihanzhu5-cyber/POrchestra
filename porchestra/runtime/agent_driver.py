@@ -215,6 +215,7 @@ class POrchestraAgentDriver:
                 "tool": prepared.request.tool_name,
                 "arguments": prepared.request.args,
                 "exit_code": self.observation.get("exit_code"),
+                "output_excerpt": str(self.observation.get("output", ""))[-1200:],
                 "output_digest": hashlib.sha256(
                     str(self.observation.get("output", result.value)).encode()
                 ).hexdigest(),

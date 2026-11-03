@@ -12,6 +12,7 @@ from typing import Any, Awaitable, Callable
 
 from .contracts import ContractGenerator, ContractVerifier
 from .health import HealthMonitor
+from .handoff import summarize
 from .lifecycle import EventSink, StateMerger
 from .memory import ToolGateway
 from .types import (
@@ -582,7 +583,8 @@ class NodeRuntime:
             for contract in contracts:
                 self.verifier.validate_contract(contract, parent=parent.contract)
             self.contracts.validate_delegation(parent.contract, contracts)
-            context = self._child_startup_context(parent)
+            handoff = await self._build_handoff(parent)
+            context = json.dumps(handoff, ensure_ascii=False)
             self.budget.validate_spawn(
                 parent_id,
                 contracts,
@@ -626,7 +628,10 @@ class NodeRuntime:
                     node.last_diff_fingerprint = await self.workspaces.diff_fingerprint(
                         workspace
                     )
-                    prepared.append((node, self._driver_factory(node, self.gateway)))
+                    node.handoff = {**handoff, "changes": {**handoff["changes"], "state": "inherited_from_parent"}}
+                    driver = self._driver_factory(node, self.gateway)
+                    prepared.append((node, driver))
+                    await driver.inject_context(node.node_id, "PARENT_HANDOFF " + json.dumps(node.handoff, ensure_ascii=False))
                 for node, driver in prepared:
                     self.registry.register(node)
                     self._drivers[node.node_id] = driver
@@ -670,8 +675,10 @@ class NodeRuntime:
         self.health.acknowledge_split(node)
         return ids
 
-    def _child_startup_context(self, parent: NodeRecord) -> str:
-        return json.dumps(parent.progress_log[-8:], ensure_ascii=False)
+    async def _build_handoff(self, node):
+        describe = getattr(self.workspaces, "describe_changes", None)
+        summary = await describe(node.base_snapshot, node.workspace_id) if describe else ""
+        return summarize(node, change_summary=summary)
 
     async def request_finish(self, node_id: str) -> VerificationReport:
         node = self.registry.get(node_id)
@@ -757,6 +764,7 @@ class NodeRuntime:
                         "merged": merge.committed if merge else False,
                         "conflicts": merge.conflicts if merge else (),
                         "facts": [fact.key for fact in result.facts],
+                        "handoff": result.handoff,
                     }
                 )
                 await self.destroy(result.node_id, result=result)

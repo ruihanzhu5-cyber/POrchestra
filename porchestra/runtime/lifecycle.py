@@ -13,6 +13,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from .memory import GlobalMemoryBoard
+from .handoff import summarize
 from .types import (
     AgentDriver,
     MergeReport,
@@ -161,6 +162,8 @@ class StateMerger:
         facts = self.board.verified_facts(
             node.workspace_id, snapshot=report.snapshot if report else diff.tip
         )
+        describe = getattr(self.workspaces, "describe_changes", None)
+        change_summary = await describe(node.base_snapshot, node.workspace_id) if describe else ""
         result = NodeResult(
             node.node_id,
             outcome,
@@ -169,6 +172,7 @@ class StateMerger:
             verification=report,
             facts=facts,
             artifact_refs=(diff.artifact_ref, diff.tip.artifact_ref),
+            handoff=summarize(node, change_summary=change_summary, outcome=outcome + ": " + reason if outcome != "verified" else outcome, checks=report.checks if report else ()),
         )
         return await self.events.persist_result(result)
 

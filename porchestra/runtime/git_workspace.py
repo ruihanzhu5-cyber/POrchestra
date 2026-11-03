@@ -259,6 +259,11 @@ class GitWorkspaceBackend:
             if staging not in self._preserved:
                 await self.release(staging)
 
+    async def describe_changes(self, base, workspace_id):
+        current = await self.snapshot(workspace_id)
+        output, _ = await self._git(workspace_id, "diff", "--stat", base.revision, current.revision, "--")
+        return output.decode(errors="replace")
+
     async def release(self, workspace_id: str) -> None:
         path = Path(workspace_id).resolve()
         key = str(path)

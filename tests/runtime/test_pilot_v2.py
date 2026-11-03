@@ -251,3 +251,33 @@ class ImportIsolationTests(unittest.IsolatedAsyncioTestCase):
         # This assertion can fail for the target regression, but never the removed API.
         self.assertNotIn("has no attribute 'Config'", result.stderr)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class HandoffTests(unittest.IsolatedAsyncioTestCase):
+    async def test_spawn_handoff_has_reads_changes_checks_and_next_step(self):
+        from test_runtime import RuntimeTests, MockAgentDriver
+        from porchestra.runtime.runtime import BudgetLedger
+        from porchestra.runtime.types import StepOutcome
+        fixture = RuntimeTests()
+        await fixture.asyncSetUp()
+        self.addCleanup(fixture.doCleanups)
+        class Requester(MockAgentDriver):
+            async def step(self, record):
+                self.steps += 1
+                if record.depth == 0 and self.steps == 1:
+                    helper = replace(record.contract, objective="repair helper", contract_id="helper", parent_contract_id=record.contract.contract_id, scope=("fix.py",), budget_limit=30000)
+                    return StepOutcome("spawn", child_contracts=(helper,), progress={"tool":"read_range", "arguments":{"path":"fix.py", "start":1, "end":20}})
+                if record.depth > 0:
+                    self.backend.files[record.workspace_id]["fix.py"] = "fixed"
+                return StepOutcome("finish", tokens_used=1)
+        runtime = fixture.build(factory=lambda record: Requester(fixture.backend))
+        fixture.root = replace(fixture.root, budget_limit=100000)
+        runtime.budget = BudgetLedger(100000)
+        result = await runtime.run(fixture.root, workspace_id="root")
+        self.assertEqual(result.outcome, "verified")
+        msg = next(m for m in fixture.drivers["helper"].messages if m.startswith("PARENT_HANDOFF"))
+        import json
+        data = json.loads(msg.partition(" ")[2])
+        self.assertEqual(set(data), {"read_locations","changes","checks_run","unresolved_issues","next_steps"})
+        self.assertEqual(data["read_locations"][0]["arguments"]["path"], "fix.py")
+        self.assertEqual(data["changes"]["state"], "inherited_from_parent")
