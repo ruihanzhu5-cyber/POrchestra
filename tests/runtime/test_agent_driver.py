@@ -334,11 +334,11 @@ class AgentDriverTests(unittest.IsolatedAsyncioTestCase):
             )
 
         def session_factory(record, **kwargs):
-            actions = (
-                [{"action": "view"}] * 5
-                if record.parent_id is None
-                else [{"action": "edit"}]
-            ) + [{"action": "finish", "params": {}}]
+            children = [
+                {"objective":f"repair component {i}", "acceptance_checks":[f"pytest component_{i}"], "scope":[f"component_{i}"], "budget_limit":20000}
+                for i in range(2)]
+            actions = ([{"action":"view"}] * 5 + [{"action":"spawn","params":{"children":children}}]
+                if record.parent_id is None else [{"action":"edit"}]) + [{"action":"finish","params":{}}]
             session = ReplaySession(actions)
             sessions.append(session)
             return session

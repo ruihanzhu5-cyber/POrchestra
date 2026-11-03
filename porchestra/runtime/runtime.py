@@ -451,15 +451,6 @@ class NodeRuntime:
                                         reason=outcome.reason or "agent stopped",
                                     ),
                                 )
-                            elif health.split_required:
-                                self._launch(
-                                    identity,
-                                    "split",
-                                    self._bounded(
-                                        self.forced_split(identity, health),
-                                        self.limits.split_timeout_seconds,
-                                    ),
-                                )
                             elif outcome.kind == "spawn":
                                 self._launch(
                                     identity,
@@ -470,6 +461,15 @@ class NodeRuntime:
                                             outcome.child_contracts,
                                             reason=outcome.reason or "agent delegation",
                                         ),
+                                        self.limits.split_timeout_seconds,
+                                    ),
+                                )
+                            elif health.split_required:
+                                self._launch(
+                                    identity,
+                                    "split",
+                                    self._bounded(
+                                        self.forced_split(identity, health),
                                         self.limits.split_timeout_seconds,
                                     ),
                                 )
