@@ -146,6 +146,7 @@ class RuntimeBenchmarkRunner:
         session_factory: Callable[..., Any] = create_legacy_session,
         prepare_task: Callable[[Any, Path], Awaitable[PreparedTask]] | None = None,
         gaia_tools: list[Any] | None = None,
+        grade_terminal_failures: bool = False,
     ) -> None:
         self.benchmark, self.main_model, self.sub_models = (
             benchmark,
@@ -160,6 +161,7 @@ class RuntimeBenchmarkRunner:
         self.task_timeout_seconds = task_timeout_seconds or 3600.0
         self.session_factory, self.prepare_task = session_factory, prepare_task
         self.gaia_tools = gaia_tools or []
+        self.grade_terminal_failures = grade_terminal_failures
         if type(max_steps) is not int or max_steps <= 0:
             raise ValueError("max_steps must be a positive action count")
         if not sub_models:
@@ -323,9 +325,10 @@ class RuntimeBenchmarkRunner:
                 runtime.run(contract, workspace_id=prepared.workspace_id),
                 self.task_timeout_seconds,
             )
-            if outcome.outcome == "verified":
+            if outcome.outcome == "verified" or self.grade_terminal_failures:
                 grading = await prepared.finalize(base)
-            else:
+                grading["partial_patch"] = outcome.outcome != "verified"
+            if outcome.outcome != "verified":
                 error = outcome.reason
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
@@ -342,6 +345,7 @@ class RuntimeBenchmarkRunner:
             "success": bool(grading.get("success", reward == 1.0)),
             "reward": reward,
             "runtime_outcome": outcome.outcome if outcome else "failed",
+            "contract_accepted": bool(outcome and outcome.outcome == "verified"),
             "tokens_used": 0,
             "nodes": runtime.registry.total_registered if runtime else 0,
             "topology_path": events.path,

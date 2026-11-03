@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import logging
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Protocol
@@ -189,6 +190,12 @@ class POrchestraAgentDriver:
                 return self._outcome("continue", reason="runtime guidance supplied")
             prepared = self.binding.prepare(node, action)
             result = await self.gateway.execute(prepared.request, prepared.call)
+            if result.cache_hit:
+                logging.getLogger(__name__).info(
+                    "[Cache Hit] node=%s tool=%s",
+                    node.node_id,
+                    prepared.request.tool_name,
+                )
             self.observation = self.binding.observation(
                 result.value,
                 step=node.steps_used + 1,
