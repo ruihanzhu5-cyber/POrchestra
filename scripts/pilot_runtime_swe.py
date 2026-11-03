@@ -24,8 +24,8 @@ PILOT_IDS = ("psf__requests-2674", "pytest-dev__pytest-8365", "sympy__sympy-1763
 PUBLIC_CHECKS = {
     PILOT_IDS[0]: """from requests import Response
 from requests.exceptions import RequestException
-from requests.packages.urllib3.exceptions import DecodeError, ReadTimeoutError
-for failure in (DecodeError("broken decode"), ReadTimeoutError(None, None, "timeout")):
+from requests.packages.urllib3.exceptions import DecodeError, ReadTimeoutError, TimeoutError
+for failure in (DecodeError("broken decode"), ReadTimeoutError(None, None, "timeout"), TimeoutError("proxy timeout")):
     class Raw:
         def stream(self, *args, **kwargs):
             raise failure
@@ -103,6 +103,7 @@ async def worker(args):
                 "temperature": 0,
                 "top_p": 1,
                 "timeout": 90,
+                "extra_body": {"thinking": {"type": "disabled"}},
             }
         }
     )
@@ -134,7 +135,83 @@ async def worker(args):
         expected_output_pattern="public regression passed",
         timeout_seconds=120,
     )
-    runner = SWEBenchRuntimeRunner(
+
+    class GuardedPilotRunner(SWEBenchRuntimeRunner):
+        async def _prepare(self, env, directory):
+            from porchestra.runtime.benchmark_bindings import SnapshotCheckRunner
+            from porchestra.runtime.benchmark_bindings import BoundSWEExecutor
+            from porchestra.runtime import GlobalMemoryBoard, ToolGateway
+            from porchestra.runtime.memory import ToolRequest
+            import time
+
+            prepared = await super()._prepare(env, directory)
+            gateway = ToolGateway(GlobalMemoryBoard.instance())
+            request = ToolRequest(
+                "pilot-cache-probe",
+                "infrastructure-probe",
+                prepared.workspace_id,
+                "view",
+                {"operation": "git-head-readonly"},
+            )
+            calls = 0
+
+            async def read_head():
+                nonlocal calls
+                calls += 1
+                output, code = await BoundSWEExecutor(
+                    prepared.workspaces, prepared.workspace_id
+                ).execute_command("git rev-parse HEAD")
+                return {"output": output, "exit_code": code}
+
+            await gateway.execute(request, read_head)
+            cached = await gateway.execute(request, read_head)
+            print(
+                json.dumps(
+                    {
+                        "event": "CACHE_PROBE",
+                        "scope": "infrastructure_only_not_model_savings",
+                        "annotation": cached.annotation,
+                        "real_calls": calls,
+                        "cache_hit": cached.cache_hit,
+                    }
+                ),
+                flush=True,
+            )
+            if not cached.cache_hit or calls != 1:
+                raise RuntimeError("Real-container cache probe failed")
+            base = await prepared.workspaces.snapshot(prepared.workspace_id)
+            baseline = await SnapshotCheckRunner(prepared.workspaces).run(
+                check, base, deadline_monotonic=time.monotonic() + 120
+            )
+            print(
+                json.dumps(
+                    {
+                        "event": "PILOT_BASELINE_CHECK",
+                        "instance_id": args.worker,
+                        "exit_code": baseline.exit_code,
+                        "output_tail": (baseline.stdout + baseline.stderr)[-800:],
+                    }
+                ),
+                flush=True,
+            )
+            if baseline.exit_code == 0:
+                raise RuntimeError(
+                    "Public DoD already passes the unmodified baseline; repair acceptance before model calls"
+                )
+            if any(
+                marker in baseline.stdout + baseline.stderr
+                for marker in (
+                    "ModuleNotFoundError",
+                    "ImportError",
+                    "command not found",
+                )
+            ):
+                raise RuntimeError(
+                    "Public DoD baseline failed due to environment setup, not the target regression"
+                )
+            return prepared
+
+    runner = GuardedPilotRunner(
         benchmark=SelectedBenchmark(),
         main_model=model,
         sub_models=[model],
@@ -142,6 +219,7 @@ async def worker(args):
             (check,), token_budget=args.token_budget, node_concurrency=2, max_nodes=10
         ),
         max_steps=80,
+        subagent_backend="mini",
         task_timeout_seconds=900,
         grade_terminal_failures=True,
     )
@@ -197,9 +275,12 @@ def main():
         "acceptance_source": "public issue only",
         "run_id": uuid4().hex,
     }
-    args.run_dir.joinpath("pilot-manifest.json").write_text(
-        json.dumps(manifest, indent=2)
-    )
+    manifest_path = args.run_dir / "pilot-manifest.json"
+    if manifest_path.exists():
+        history = args.run_dir / "history"
+        history.mkdir(exist_ok=True)
+        (history / f"manifest-{uuid4().hex}.json").write_text(manifest_path.read_text())
+    manifest_path.write_text(json.dumps(manifest, indent=2))
     for identity in PILOT_IDS:
         status = args.run_dir / "status" / (identity + ".json")
         previous = json.loads(status.read_text()) if status.exists() else {}
@@ -209,7 +290,16 @@ def main():
                 flush=True,
             )
             continue
-        attempt = int(previous.get("attempt", 0)) + 1
+        existing = list((args.run_dir / "attempts" / identity).glob("attempt-*"))
+        attempt = (
+            max(
+                [
+                    int(previous.get("attempt", 0)),
+                    *(int(path.name.split("-")[-1]) for path in existing),
+                ]
+            )
+            + 1
+        )
         print(
             json.dumps(
                 {

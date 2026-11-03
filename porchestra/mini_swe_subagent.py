@@ -33,6 +33,7 @@ class MiniSWESubAgent(BaseAgent):
     allowed_tools: list[str] | None = Field(default=None)
     live_trace: Any = Field(default=None, exclude=True)
     max_observation_chars: int = Field(default=10_000)
+    workspace_path: str = Field(default="/testbed")
 
     _messages: list[dict[str, Any]] = PrivateAttr(default_factory=list)
     _initialized: bool = PrivateAttr(default=False)
@@ -89,6 +90,7 @@ class MiniSWESubAgent(BaseAgent):
                     max_steps=max_steps,
                     remaining_steps=remaining_steps,
                     budget_warning=self._budget_warning(remaining_steps),
+                    workspace_path=self.workspace_path,
                 ),
             }
         )
@@ -128,7 +130,7 @@ class MiniSWESubAgent(BaseAgent):
         try:
             payload = await self.llm.call_messages_with_tools(
                 self._messages,
-                tools=build_mini_swe_bash_tool(),
+                tools=build_mini_swe_bash_tool(self.workspace_path),
                 tool_choice="auto",
             )
         except Exception as exc:

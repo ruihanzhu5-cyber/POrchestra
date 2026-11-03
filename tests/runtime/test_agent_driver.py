@@ -553,6 +553,41 @@ class AgentDriverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(process.returncode, -9)
         process.wait.assert_awaited_once()
 
+    async def test_native_api_options_and_reasoning_are_not_executable_content(self):
+        from base.engine.async_llm import AsyncLLM
+
+        client = AsyncMock()
+        client.chat.completions.create.return_value = SimpleNamespace(
+            usage=SimpleNamespace(prompt_tokens=10, completion_tokens=5),
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=None,
+                        reasoning_content="COMMAND\nunsafe simulation",
+                        tool_calls=[],
+                    )
+                )
+            ],
+        )
+        llm = object.__new__(AsyncLLM)
+        llm.config = SimpleNamespace(
+            model="mock",
+            temperature=0,
+            top_p=1,
+            extra_body={"thinking": {"type": "disabled"}},
+        )
+        llm.max_completion_tokens = 4096
+        llm.aclient = client
+        llm.usage_tracker = SimpleNamespace(add_usage=lambda *args: {"total_cost": 0.0})
+        result = await llm.call_messages_with_tools(
+            [{"role": "user", "content": "test"}], tools=[]
+        )
+        self.assertEqual(result["content"], "")
+        self.assertEqual(
+            client.chat.completions.create.call_args.kwargs["extra_body"],
+            {"thinking": {"type": "disabled"}},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -133,8 +133,9 @@ def build_mini_swe_task_prompt(
     max_steps: int,
     remaining_steps: int,
     budget_warning: str,
+    workspace_path: str = "/testbed",
 ) -> str:
-    return MINI_SWE_TASK_PROMPT.format(
+    return MINI_SWE_TASK_PROMPT.replace("/testbed", workspace_path).format(
         original_question=original_question,
         task_instruction=task_instruction,
         context=context or "No additional context provided.",
@@ -159,7 +160,7 @@ def build_mini_swe_final_prompt(
     )
 
 
-def build_mini_swe_bash_tool() -> list[dict[str, Any]]:
+def build_mini_swe_bash_tool(workspace_path: str = "/testbed") -> list[dict[str, Any]]:
     return [
         {
             "type": "function",
@@ -167,7 +168,7 @@ def build_mini_swe_bash_tool() -> list[dict[str, Any]]:
                 "name": "bash",
                 "description": (
                     "Run one real non-interactive Bash command in the SWE-bench "
-                    "container. Include `cd /testbed` when accessing the repository."
+                    f"container. Include `cd {workspace_path}` when accessing the repository."
                 ),
                 "parameters": {
                     "type": "object",
@@ -186,5 +187,7 @@ def build_mini_swe_bash_tool() -> list[dict[str, Any]]:
 
 def _observation_text(observation: Any) -> str:
     if isinstance(observation, dict):
-        return str(observation.get("output") or observation.get("message") or observation)
+        return str(
+            observation.get("output") or observation.get("message") or observation
+        )
     return str(observation)

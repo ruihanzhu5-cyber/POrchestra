@@ -81,6 +81,7 @@ class LLMConfig:
         self.base_url = config.get("base_url", "https://api.openai.com/v1")
         self.top_p = config.get("top_p", 1)
         self.timeout = config.get("timeout") or config.get("request_timeout")
+        self.extra_body = config.get("extra_body") or {}
 
 class LLMsConfig:
     """Configuration manager for multiple LLM configurations"""
@@ -212,6 +213,7 @@ class LLMsConfig:
             "base_url": config.get("base_url", "https://oneapi.deepwisdom.ai/v1"),
             "top_p": config.get("top_p", 1),
             "timeout": config.get("timeout") or config.get("request_timeout"),
+            "extra_body": config.get("extra_body") or {},
         }
         
         # Create and return an LLMConfig instance with the specified configuration
@@ -380,6 +382,8 @@ class AsyncLLM:
             if is_claude
             else {"temperature": self.config.temperature, "top_p": self.config.top_p}
         )
+        if getattr(self.config, "extra_body", None):
+            sampling_params["extra_body"] = self.config.extra_body
         # Gemini 3 flash preview requires reasoning_effort parameter
         if self.config.model == "gemini-3-flash-preview":
             response = await self.aclient.chat.completions.create(
@@ -441,21 +445,16 @@ class AsyncLLM:
         # Thinking-model endpoints may return ``content=None`` when a response
         # exhausts its budget before emitting the final channel.  Returning
         # None makes downstream JSON parsers crash on ``.strip()`` and turns a
-        # recoverable invalid action into a task-level exception.  Preserve a
-        # textual reasoning fallback when available; otherwise return an empty
-        # string so the normal invalid-action recovery path can run.
+        # recoverable invalid action into a task-level exception. Return an
+        # empty string so normal invalid-action recovery can run; reasoning
+        # text must never be parsed or executed as an agent action.
         response_message = response.choices[0].message
         ret = response_message.content
         if ret is None:
-            ret = getattr(response_message, "reasoning_content", None)
-            if ret is None:
-                model_extra = getattr(response_message, "model_extra", None) or {}
-                ret = model_extra.get("reasoning_content")
-            if ret is None:
-                ret = ""
+            ret = ""
             logger.log_to_file(
                 LogLevel.WARNING,
-                "LLM response content was None; using reasoning_content or empty text fallback.",
+                "LLM final content was None; reasoning_content is not executable agent output.",
             )
         logger.log_to_file(LogLevel.INFO, f"LLM Response: {ret}")
 
@@ -526,6 +525,8 @@ class AsyncLLM:
             )
         if tokens_to_use is not None:
             request["max_tokens"] = tokens_to_use
+        if getattr(self.config, "extra_body", None):
+            request["extra_body"] = self.config.extra_body
         if reasoning_effort is not None:
             request["reasoning_effort"] = reasoning_effort
 
@@ -544,11 +545,6 @@ class AsyncLLM:
 
         message = response.choices[0].message
         content = message.content
-        if content is None:
-            content = getattr(message, "reasoning_content", None)
-            if content is None:
-                model_extra = getattr(message, "model_extra", None) or {}
-                content = model_extra.get("reasoning_content")
         serialized_calls = []
         for call in getattr(message, "tool_calls", None) or []:
             function = getattr(call, "function", None)

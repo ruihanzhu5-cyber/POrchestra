@@ -396,10 +396,12 @@ class SWEBenchRuntimeRunner(RuntimeBenchmarkRunner):
                 "official_report": report,
             }
 
+        info = env.get_basic_info()
+        info = info.model_copy(update={"instruction": env.instance.problem_statement})
         return PreparedTask(
             workspaces,
             workspace_id,
-            env.get_basic_info(),
+            info,
             observation,
             binding,
             finalize,

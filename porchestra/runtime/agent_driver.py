@@ -366,6 +366,10 @@ def create_legacy_session(
         original_question=basic_info.instruction,
         allowed_tools=list(node.contract.allowed_tools),
         live_trace=trace,
+        **(
+            {"workspace_path": workspace_path} if session_class is WorkspaceMini else {}
+        ),
     )
+    session.llm.max_completion_tokens = 4096
     session.reset(basic_info)
     return session
