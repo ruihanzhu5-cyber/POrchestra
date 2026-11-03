@@ -14,6 +14,7 @@ import os
 import shlex
 import subprocess
 import sys
+import time
 from pathlib import Path
 from uuid import uuid4
 
@@ -85,6 +86,7 @@ def parser():
 
 
 async def worker(args):
+    started = time.monotonic()
     secret = json.loads(args.secret_file.read_text())
     os.environ["DEEPSEEK_API_KEY"] = secret["api_key"]
     os.environ["HF_DATASETS_OFFLINE"] = "1"
@@ -250,6 +252,10 @@ async def worker(args):
     result = results[args.worker]
     result["scored"] = "official_report" in result.get("grading", {})
     result["attempt"] = args.attempt
+    result["code_revision"] = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
+    ).strip()
+    result["duration_seconds"] = time.monotonic() - started
     args.run_dir.joinpath("status").mkdir(parents=True, exist_ok=True)
     args.run_dir.joinpath("status", args.worker + ".json").write_text(
         json.dumps(result, ensure_ascii=False, indent=2)

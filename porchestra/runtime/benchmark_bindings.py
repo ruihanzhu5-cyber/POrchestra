@@ -31,7 +31,11 @@ class MountedSWEWorkspace(GitWorkspaceBackend):
     def __init__(self, mount_root: str, executor: Any) -> None:
         self.mount_root = Path(mount_root).resolve()
         self.executor = executor
-        super().__init__(str(self.mount_root / "runtime_git"), shared_clones=False)
+        super().__init__(
+            str(self.mount_root / "runtime_git"),
+            shared_clones=False,
+            support_paths=("src/_pytest/_version.py",),
+        )
 
     def container_path(self, host_path: str) -> str:
         relative = Path(host_path).resolve().relative_to(self.mount_root)

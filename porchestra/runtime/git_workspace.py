@@ -25,11 +25,13 @@ class GitWorkspaceBackend:
         *,
         timeout_seconds: float = 120.0,
         shared_clones: bool = True,
+        support_paths: tuple[str, ...] = (),
     ) -> None:
         self.root = Path(artifact_root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.timeout_seconds = timeout_seconds
         self.shared_clones = shared_clones
+        self.support_paths = support_paths
         self._store = self.root / "snapshots.git"
         self._store_lock = asyncio.Lock()
         self._store_ready = False
@@ -86,6 +88,13 @@ class GitWorkspaceBackend:
         try:
             await self._git(str(path), "read-tree", "HEAD", env=env)
             await self._git(str(path), "add", "-A", "--", ".", env=env)
+            for relative in self.support_paths:
+                support = path / relative
+                support.resolve().relative_to(path)
+                if support.is_file() and not support.is_symlink():
+                    # Runtime build products belong to the initial snapshot, never
+                    # a fabricated task patch. Forks must preserve their exact bytes.
+                    await self._git(str(path), "add", "-f", "--", relative, env=env)
             tree, _ = await self._git(str(path), "write-tree", env=env)
         finally:
             index.unlink(missing_ok=True)

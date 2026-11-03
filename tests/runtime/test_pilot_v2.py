@@ -574,3 +574,55 @@ class NativePromptTests(unittest.TestCase):
             current_step=1,
         )
         self.assertEqual(action["action"], "read_range")
+
+
+class RuntimeSupportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_ignored_build_product_survives_fork_without_becoming_task_patch(
+        self,
+    ):
+        from porchestra.runtime.git_workspace import GitWorkspaceBackend
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "repo"
+            root.mkdir()
+            for args in (
+                ("init",),
+                ("config", "user.name", "test"),
+                ("config", "user.email", "test@local"),
+            ):
+                subprocess.run(
+                    ["git", "-C", str(root), *args], check=True, capture_output=True
+                )
+            (root / ".gitignore").write_text("_version.py\n")
+            package = root / "src" / "_pytest"
+            package.mkdir(parents=True)
+            (package / "__init__.py").write_text("from ._version import version\n")
+            (package / "_version.py").write_text(
+                "version = 'generated-build-version'\n"
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "add", "."], check=True, capture_output=True
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "commit", "-m", "base"],
+                check=True,
+                capture_output=True,
+            )
+            backend = GitWorkspaceBackend(
+                str(Path(temp) / "artifacts"),
+                support_paths=("src/_pytest/_version.py",),
+            )
+            base = await backend.snapshot(str(root))
+            fork = await backend.fork(base, node_id="child")
+            self.assertEqual(
+                (Path(fork) / "src/_pytest/_version.py").read_text(),
+                (package / "_version.py").read_text(),
+            )
+            diff = await backend.export_diff(base, fork)
+            self.assertEqual(Path(diff.artifact_ref).read_bytes(), b"")
+            self.assertNotIn(
+                "_version.py",
+                subprocess.check_output(
+                    ["git", "-C", str(root), "ls-files"], text=True
+                ),
+            )
